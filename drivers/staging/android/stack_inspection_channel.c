@@ -132,7 +132,6 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
     pid_t key;
     pid_t cur_tid;
     struct channel_node* node;
-    printk( "[CHANNEL] write to global_buffer\n");
 
     mutex_lock(&channel_lock);
     cur_tid = current_tid();
@@ -202,6 +201,7 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
 
     mutex_unlock(&channel_lock);
 
+    printk( "[CHANNEL] write to global_buffer %d\n", sz_data);
     return sz_data;
 }
 
@@ -227,7 +227,6 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
     pid_t key;
     pid_t cur_tid;
     struct channel_node* node;
-    printk( "[CHANNEL] read from global_buffer\n" );
 
     mutex_lock(&channel_lock);
     cur_tid = current_tid();
@@ -272,6 +271,7 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
     sz_data = copy_to_user( buf, global_buffer, count);
     target_tid = 0;
     mutex_unlock(&channel_lock);
+    printk( "[CHANNEL] read from global_buffer %d\n", sz_data );
     return sz_data;
 }
 
