@@ -2470,10 +2470,8 @@ retry:
 			struct task_struct *sender = t->from->proc->tsk;
 			tr.sender_pid = task_tgid_nr_ns(sender,
 							current->nsproxy->pid_ns);
-            tr.sender_thread_id = task_pid_vnr(sender);
 		} else {
 			tr.sender_pid = 0;
-            tr.sender_thread_id = 0;
 		}
 
 		tr.data_size = t->buffer->data_size;
