@@ -14,10 +14,12 @@
 #include <linux/rbtree.h>
 
 #define  BUFF_SIZE      (16 * 1024)
+#define  NAME_SIZE      128
 #define  MAJOR_NUMBER   250
 #define  RESPONSE_COUNT 1000000
 
 static char *global_buffer  = NULL;
+static char current_task_name[NAME_SIZE];
 
 static DEFINE_MUTEX(channel_lock);
 static DECLARE_WAIT_QUEUE_HEAD(wq);
@@ -36,6 +38,12 @@ inline pid_t current_tid(void) {
 
 inline pid_t current_pid(void) {
     return task_tgid_vnr(current);
+}
+
+inline char* get_task_name(void) {
+    get_task_comm(current_task_name, current);
+    current_task_name[sizeof(current->comm)] = '\0';
+    return current_task_name;
 }
 
 //----> red black tree interface
@@ -106,21 +114,21 @@ out:
 
 static int channel_open( struct inode *inode, struct file *filp )
 {
-    printk( "[CHANNEL] opened\n" );
+    printk( "[CHANNEL] opened (%s)\n", get_task_name() );
     return 0;
 }
 
 static int channel_release( struct inode *inode, struct file *filp )
 {
     struct channel_node* node;
-    printk( "[CHANNEL] released: %d\n", current_pid() );
+    printk( "[CHANNEL] released: %d (%s)\n", current_pid(), get_task_name() );
     mutex_lock(&channel_lock);
     node = rb_search_channel_node(current_pid());
     if (node)
     {
         rb_erase(&(node->elem), &channel_tree);
         kfree( node );
-        printk( "[CHANNEL] remove: %d\n", current_pid() );
+        printk( "[CHANNEL] remove: %d (%s)\n", current_pid(), get_task_name() );
     }
     mutex_unlock(&channel_lock);
     return 0;
@@ -201,7 +209,7 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
 
     mutex_unlock(&channel_lock);
 
-    printk( "[CHANNEL] write to global_buffer %d\n", sz_data);
+    printk( "[CHANNEL] write to global_buffer %d (%s)\n", sz_data, get_task_name());
     return sz_data;
 }
 
@@ -257,7 +265,7 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
             {
                 rb_erase(&(node->elem), &channel_tree);
                 kfree( node );
-                printk( "[CHANNEL] remove: %d\n", waiting_pid );
+                printk( "[CHANNEL] remove: %d (%s)\n", waiting_pid, get_task_name() );
             }
             mutex_unlock(&channel_lock);
             return 0;
@@ -271,7 +279,7 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
     sz_data = copy_to_user( buf, global_buffer, count);
     target_tid = 0;
     mutex_unlock(&channel_lock);
-    printk( "[CHANNEL] read from global_buffer %d\n", sz_data );
+    printk( "[CHANNEL] read from global_buffer %d (%s)\n", sz_data, get_task_name() );
     return sz_data;
 }
 
@@ -289,7 +297,7 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
         {
             rb_erase(&(node->elem), &channel_tree);
             kfree( node );
-            printk( "[CHANNEL] remove pm_pid: %d\n", pm_pid );
+            printk( "[CHANNEL] remove pm_pid: %d (%s)\n", pm_pid, get_task_name() );
         }
     }
     if (cmd == 1)
@@ -332,7 +340,7 @@ int __init channel_init( void )
     global_buffer = (char*) kmalloc( BUFF_SIZE, GFP_KERNEL );
     memset( global_buffer, 0, BUFF_SIZE);
 
-    printk( "[CHANNEL] initialized\n");
+    printk( "[CHANNEL] initialized (%s)\n", get_task_name());
 
     return ret;
 }
