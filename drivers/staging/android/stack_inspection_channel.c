@@ -114,21 +114,21 @@ out:
 
 static int channel_open( struct inode *inode, struct file *filp )
 {
-    printk( "[CHANNEL] opened (%s)\n", get_task_name() );
+    printk( "[CHANNEL] opened (%s, %d)\n", get_task_name(), current_pid() );
     return 0;
 }
 
 static int channel_release( struct inode *inode, struct file *filp )
 {
     struct channel_node* node;
-    printk( "[CHANNEL] released: %d (%s)\n", current_pid(), get_task_name() );
+    printk( "[CHANNEL] released: %d (%s, %d)\n", current_pid(), get_task_name(), current_pid() );
     mutex_lock(&channel_lock);
     node = rb_search_channel_node(current_pid());
     if (node)
     {
         rb_erase(&(node->elem), &channel_tree);
         kfree( node );
-        printk( "[CHANNEL] remove: %d (%s)\n", current_pid(), get_task_name() );
+        printk( "[CHANNEL] remove: %d (%s, %d)\n", current_pid(), get_task_name(), current_pid() );
     }
     mutex_unlock(&channel_lock);
     return 0;
@@ -209,7 +209,7 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
 
     mutex_unlock(&channel_lock);
 
-    printk( "[CHANNEL] write to global_buffer %d (%s)\n", sz_data, get_task_name());
+    printk( "[CHANNEL] write to global_buffer %d (%s, %d)\n", sz_data, get_task_name(), current_pid());
     return sz_data;
 }
 
@@ -265,7 +265,7 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
             {
                 rb_erase(&(node->elem), &channel_tree);
                 kfree( node );
-                printk( "[CHANNEL] remove: %d (%s)\n", waiting_pid, get_task_name() );
+                printk( "[CHANNEL] remove: %d (%s, %d)\n", waiting_pid, get_task_name(), current_pid() );
             }
             mutex_unlock(&channel_lock);
             return 0;
@@ -279,7 +279,7 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
     sz_data = copy_to_user( buf, global_buffer, count);
     target_tid = 0;
     mutex_unlock(&channel_lock);
-    printk( "[CHANNEL] read from global_buffer %d (%s)\n", sz_data, get_task_name() );
+    printk( "[CHANNEL] read from global_buffer %d (%s, %d)\n", sz_data, get_task_name(), current_pid() );
     return sz_data;
 }
 
@@ -297,7 +297,7 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
         {
             rb_erase(&(node->elem), &channel_tree);
             kfree( node );
-            printk( "[CHANNEL] remove pm_pid: %d (%s)\n", pm_pid, get_task_name() );
+            printk( "[CHANNEL] remove pm_pid: %d (%s, %d)\n", pm_pid, get_task_name(), current_pid() );
         }
     }
     if (cmd == 1)
@@ -340,7 +340,7 @@ int __init channel_init( void )
     global_buffer = (char*) kmalloc( BUFF_SIZE, GFP_KERNEL );
     memset( global_buffer, 0, BUFF_SIZE);
 
-    printk( "[CHANNEL] initialized (%s)\n", get_task_name());
+    printk( "[CHANNEL] initialized (%s, %d)\n", get_task_name(), current_pid());
 
     return ret;
 }
