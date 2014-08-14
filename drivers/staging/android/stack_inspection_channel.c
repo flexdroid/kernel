@@ -23,7 +23,7 @@ static char current_task_name[NAME_SIZE];
 static DEFINE_MUTEX(channel_lock);
 static DECLARE_WAIT_QUEUE_HEAD(wq);
 static pid_t pm_pid = 0;
-static pid_t wakeup_tid = 0;
+static struct task_struct *wakeup_task = NULL;
 static bool in_stack_inspection = false;
 
 inline pid_t current_tid(void) {
@@ -46,7 +46,7 @@ static struct rb_root channel_tree = RB_ROOT;
 struct channel_node {
     struct rb_node elem;
     pid_t key_pid;
-    pid_t value_tid;
+    struct task_struct *value_task;
 };
 
 static inline struct channel_node * rb_search_channel_node(pid_t key)
@@ -164,17 +164,32 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
         mutex_unlock(&channel_lock);
         if (node != NULL)
         {
-            // wake up target stack inspector
-            // NOTE: right after releasing wq, it is possible
-            // that stack inspector wake up and do not wait writing target tid.
-            // Thus holding lock until writing target tid is required.
-            mutex_lock(&channel_lock);
-            wakeup_tid = node->value_tid;
-            wake_up_all(&wq);
+            if (!task_is_dead(node->value_task))
+            {
+                // wake up target stack inspector
+                // NOTE: right after releasing wq, it is possible
+                // that stack inspector wake up and do not wait writing target tid.
+                // Thus holding lock until writing target tid is required.
+                mutex_lock(&channel_lock);
+                wakeup_task = node->value_task;
+                wake_up_all(&wq);
 
-            // write target tid
-            sz_data = copy_from_user( global_buffer, buf+sizeof(pid_t), count - sizeof(pid_t));
-            mutex_unlock(&channel_lock);
+                // write target tid
+                sz_data = copy_from_user( global_buffer, buf+sizeof(pid_t),
+                        count - sizeof(pid_t));
+                mutex_unlock(&channel_lock);
+            }
+            else
+            {
+                // target app is dead
+                // remove from rbtree
+                mutex_lock(&channel_lock);
+                rb_erase(&(node->elem), &channel_tree);
+                kfree( node );
+                printk( "[CHANNEL] remove from rbtree: %d (%s, %d)\n",
+                        ((pid_t *)buf)[0], get_task_name(), cur_pid );
+                mutex_unlock(&channel_lock);
+            }
         }
     }
     else
@@ -184,7 +199,7 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
         mutex_unlock(&channel_lock);
         if (node != NULL)
         {
-            if (current_tid() == node->value_tid)
+            if (current == node->value_task)
             {
                 // call from stack inspector
                 mutex_lock(&channel_lock);
@@ -206,7 +221,6 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
 {
     int sz_data;
     pid_t cur_pid;
-    pid_t cur_tid;
     struct channel_node* node;
 
     sz_data = 0;
@@ -237,8 +251,7 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
             // Only one thread will be in CS and
             // Only the thread can be waked up.
             // It cause dead-lock, thereby staying wait_event() out of CS.
-            cur_tid = current_tid();
-            wait_event(wq, (wakeup_tid == cur_tid) && in_stack_inspection);
+            wait_event(wq, (wakeup_task == current) && in_stack_inspection);
 
             // read target tid
             // NOTE: It must wait writing target tid.
@@ -246,8 +259,8 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
             mutex_lock(&channel_lock);
             sz_data = copy_to_user( buf, global_buffer, count);
 
-            // clear wakeup_tid
-            wakeup_tid = 0;
+            // clear wakeup_task
+            wakeup_task = NULL;
             mutex_unlock(&channel_lock);
         }
     }
@@ -276,19 +289,22 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
             printk( "[CHANNEL] remove from rbtree (because it's pm): %d (%s, %d)\n",
                     pm_pid, get_task_name(), cur_pid );
         }
+        printk( "[CHANNEL] pm_pid=%d (%s, %d)\n", pm_pid, get_task_name(), cur_pid );
     }
     if (cmd == 1)
     {
         node = rb_search_channel_node(cur_pid);
         if (node == NULL)
         {
+            // register only one thread for a process
             node = (struct channel_node*) kmalloc(
                     sizeof(struct channel_node),
                     GFP_KERNEL );
             node->key_pid = cur_pid;
-            node->value_tid = current_tid();
+            node->value_task = current;
             rb_insert_channel_node(cur_pid, &(node->elem));
         }
+        printk( "[CHANNEL] registered %d (%s, %d)\n", cur_pid, get_task_name(), cur_pid );
     }
     mutex_unlock(&channel_lock);
 
