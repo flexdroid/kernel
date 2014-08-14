@@ -17,6 +17,11 @@
 #define  NAME_SIZE      128
 #define  MAJOR_NUMBER   250
 
+#define cond_printk(fmt, ...) \
+    if (do_prtk) { printk(fmt, __VA_ARGS__); }
+
+static const bool do_prtk = false;
+
 static char *global_buffer  = NULL;
 static long input_size = 0;
 static char current_task_name[NAME_SIZE];
@@ -166,7 +171,7 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
                         count - sizeof(pid_t));
                 written_bytes = count - sizeof(pid_t) - missed_bytes;
                 input_size = written_bytes;
-                printk( "[CHANNEL] write: %d as %ld of %u (%s, %d)\n",
+                cond_printk( "[CHANNEL] write: %d as %ld of %u (%s, %d)\n",
                         ((pid_t *)buf)[1], written_bytes, count - sizeof(pid_t),
                         get_task_name(), cur_pid );
                 mutex_unlock(&channel_lock);
@@ -178,7 +183,7 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
                 mutex_lock(&channel_lock);
                 rb_erase(&(node->elem), &channel_tree);
                 kfree( node );
-                printk( "[CHANNEL] remove from rbtree: %d (%s, %d)\n",
+                cond_printk( "[CHANNEL] remove from rbtree: %d (%s, %d)\n",
                         ((pid_t *)buf)[0], get_task_name(), cur_pid );
                 mutex_unlock(&channel_lock);
             }
@@ -198,7 +203,7 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
                 missed_bytes = copy_from_user( global_buffer, buf, count);
                 written_bytes = count - missed_bytes;
                 input_size = written_bytes;
-                printk( "[CHANNEL] write: %s as %ld of %u (%s, %d)\n",
+                cond_printk( "[CHANNEL] write: %s as %ld of %u (%s, %d)\n",
                         buf, written_bytes, count, get_task_name(), cur_pid );
                 mutex_unlock(&channel_lock);
 
@@ -209,7 +214,7 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
         }
     }
 
-    printk( "[CHANNEL] write to global_buffer %ld (%s, %d)\n",
+    cond_printk( "[CHANNEL] write to global_buffer %ld (%s, %d)\n",
             written_bytes, get_task_name(), cur_pid);
     return written_bytes;
 }
@@ -241,7 +246,7 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
                 // remove from rbtree
                 rb_erase(&(node->elem), &channel_tree);
                 kfree( node );
-                printk( "[CHANNEL] remove from rbtree: %d (%s, %d)\n",
+                cond_printk( "[CHANNEL] remove from rbtree: %d (%s, %d)\n",
                         task_tgid_vnr(wakeup_task), get_task_name(), cur_pid );
             }
             mutex_unlock(&channel_lock);
@@ -251,7 +256,7 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
         mutex_lock(&channel_lock);
         missed_bytes = copy_to_user( buf, global_buffer, input_size );
         read_bytes = input_size - missed_bytes;
-        printk( "[CHANNEL] read: %s as %ld of %ld (%s, %d)\n",
+        cond_printk( "[CHANNEL] read: %s as %ld of %ld (%s, %d)\n",
                 buf, read_bytes, input_size, get_task_name(), cur_pid );
 
         // clear wakeup_task
@@ -282,13 +287,13 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
             mutex_lock(&channel_lock);
             missed_bytes = copy_to_user( buf, global_buffer, input_size );
             read_bytes = input_size - missed_bytes;
-            printk( "[CHANNEL] read: %d as %ld of %ld (%s, %d)\n",
+            cond_printk( "[CHANNEL] read: %d as %ld of %ld (%s, %d)\n",
                     ((int*)buf)[0], read_bytes, input_size, get_task_name(), cur_pid );
             mutex_unlock(&channel_lock);
         }
     }
 
-    printk( "[CHANNEL] read from global_buffer %ld (%s, %d)\n",
+    cond_printk( "[CHANNEL] read from global_buffer %ld (%s, %d)\n",
             read_bytes, get_task_name(), cur_pid );
     return read_bytes;
 }
@@ -309,10 +314,10 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
         {
             rb_erase(&(node->elem), &channel_tree);
             kfree( node );
-            printk( "[CHANNEL] remove from rbtree (because it's pm): %d (%s, %d)\n",
+            cond_printk( "[CHANNEL] remove from rbtree (because it's pm): %d (%s, %d)\n",
                     pm_pid, get_task_name(), cur_pid );
         }
-        printk( "[CHANNEL] pm_pid=%d (%s, %d)\n", pm_pid, get_task_name(), cur_pid );
+        cond_printk( "[CHANNEL] pm_pid=%d (%s, %d)\n", pm_pid, get_task_name(), cur_pid );
     }
     if (cmd == CHANNEL_REGISTER_INSPECTOR)
     {
@@ -327,7 +332,7 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
             node->value_task = current;
             rb_insert_channel_node(cur_pid, &(node->elem));
         }
-        printk( "[CHANNEL] registered %d (%s, %d)\n", cur_pid, get_task_name(), cur_pid );
+        cond_printk( "[CHANNEL] registered %d (%s, %d)\n", cur_pid, get_task_name(), cur_pid );
     }
     if (cmd == CHANNEL_UNREGISTER)
     {
@@ -343,13 +348,13 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
             // remove from rbtree
             rb_erase(&(node->elem), &channel_tree);
             kfree( node );
-            printk( "[CHANNEL] remove from rbtree: %d (%s, %d)\n",
+            cond_printk( "[CHANNEL] remove from rbtree: %d (%s, %d)\n",
                     cur_pid, get_task_name(), cur_pid );
         }
     }
     mutex_unlock(&channel_lock);
 
-    printk( "[CHANNEL] ioctl (%s, %d)\n", get_task_name(), cur_pid );
+    cond_printk( "[CHANNEL] ioctl (%s, %d)\n", get_task_name(), cur_pid );
     return 0;
 }
 
