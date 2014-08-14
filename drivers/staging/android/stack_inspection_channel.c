@@ -18,6 +18,7 @@
 #define  MAJOR_NUMBER   250
 
 static char *global_buffer  = NULL;
+static long input_size = 0;
 static char current_task_name[NAME_SIZE];
 
 static DEFINE_MUTEX(channel_lock);
@@ -164,6 +165,7 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
                 missed_bytes = copy_from_user( global_buffer, buf+sizeof(pid_t),
                         count - sizeof(pid_t));
                 written_bytes = count - sizeof(pid_t) - missed_bytes;
+                input_size = written_bytes;
                 printk( "[CHANNEL] write: %d as %ld of %u (%s, %d)\n",
                         ((pid_t *)buf)[1], written_bytes, count - sizeof(pid_t),
                         get_task_name(), cur_pid );
@@ -195,6 +197,7 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
                 mutex_lock(&channel_lock);
                 missed_bytes = copy_from_user( global_buffer, buf, count);
                 written_bytes = count - missed_bytes;
+                input_size = written_bytes;
                 printk( "[CHANNEL] write: %s as %ld of %u (%s, %d)\n",
                         buf, written_bytes, count, get_task_name(), cur_pid );
                 mutex_unlock(&channel_lock);
@@ -246,13 +249,14 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
 
         // Make sure that reading stack trace waits writing stack trace.
         mutex_lock(&channel_lock);
-        missed_bytes = copy_to_user( buf, global_buffer, count);
-        read_bytes = count - missed_bytes;
-        printk( "[CHANNEL] read: %s as %ld of %u (%s, %d)\n",
-                buf, read_bytes, count, get_task_name(), cur_pid );
+        missed_bytes = copy_to_user( buf, global_buffer, input_size );
+        read_bytes = input_size - missed_bytes;
+        printk( "[CHANNEL] read: %s as %ld of %ld (%s, %d)\n",
+                buf, read_bytes, input_size, get_task_name(), cur_pid );
 
         // clear wakeup_task
         wakeup_task = NULL;
+        input_size = 0;
         mutex_unlock(&channel_lock);
     }
     else
@@ -276,10 +280,10 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
             // NOTE: It must wait writing target tid.
             // Therefore, it waits lock until writing target tid has done.
             mutex_lock(&channel_lock);
-            missed_bytes = copy_to_user( buf, global_buffer, count);
-            read_bytes = count - missed_bytes;
-            printk( "[CHANNEL] read: %d as %ld of %u (%s, %d)\n",
-                    ((int*)buf)[0], read_bytes, count, get_task_name(), cur_pid );
+            missed_bytes = copy_to_user( buf, global_buffer, input_size );
+            read_bytes = input_size - missed_bytes;
+            printk( "[CHANNEL] read: %d as %ld of %ld (%s, %d)\n",
+                    ((int*)buf)[0], read_bytes, input_size, get_task_name(), cur_pid );
             mutex_unlock(&channel_lock);
         }
     }
