@@ -164,7 +164,7 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
                 missed_bytes = copy_from_user( global_buffer, buf+sizeof(pid_t),
                         count - sizeof(pid_t));
                 written_bytes = count - sizeof(pid_t) - missed_bytes;
-                printk( "[CHANNEL] write: %d as %ld of %ld (%s, %d)\n",
+                printk( "[CHANNEL] write: %d as %ld of %u (%s, %d)\n",
                         ((pid_t *)buf)[1], written_bytes, count - sizeof(pid_t),
                         get_task_name(), cur_pid );
                 mutex_unlock(&channel_lock);
@@ -195,7 +195,7 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
                 mutex_lock(&channel_lock);
                 missed_bytes = copy_from_user( global_buffer, buf, count);
                 written_bytes = count - missed_bytes;
-                printk( "[CHANNEL] write: %s as %ld of %ld (%s, %d)\n",
+                printk( "[CHANNEL] write: %s as %ld of %u (%s, %d)\n",
                         buf, written_bytes, count, get_task_name(), cur_pid );
                 mutex_unlock(&channel_lock);
 
@@ -248,7 +248,7 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
         mutex_lock(&channel_lock);
         missed_bytes = copy_to_user( buf, global_buffer, count);
         read_bytes = count - missed_bytes;
-        printk( "[CHANNEL] read: %s as %ld of %ld (%s, %d)\n",
+        printk( "[CHANNEL] read: %s as %ld of %u (%s, %d)\n",
                 buf, read_bytes, count, get_task_name(), cur_pid );
 
         // clear wakeup_task
@@ -278,7 +278,7 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
             mutex_lock(&channel_lock);
             missed_bytes = copy_to_user( buf, global_buffer, count);
             read_bytes = count - missed_bytes;
-            printk( "[CHANNEL] read: %d as %ld of %ld (%s, %d)\n",
+            printk( "[CHANNEL] read: %d as %ld of %u (%s, %d)\n",
                     ((int*)buf)[0], read_bytes, count, get_task_name(), cur_pid );
             mutex_unlock(&channel_lock);
         }
