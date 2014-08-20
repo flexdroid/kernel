@@ -18,15 +18,21 @@
 #define  MAJOR_NUMBER   250
 
 #define cond_printk(fmt, ...) \
-    if (do_prtk) { printk(fmt, __VA_ARGS__); }
+    if (do_prtk) {\
+        mutex_lock(&tname_lock);\
+        printk(fmt, __VA_ARGS__);\
+        mutex_unlock(&tname_lock);\
+    }
 
 static const bool do_prtk = false;
 
 static char *global_buffer  = NULL;
 static long input_size = 0;
 static char current_task_name[NAME_SIZE];
+static DEFINE_MUTEX(tname_lock);
 
 static DEFINE_MUTEX(channel_lock);
+static DEFINE_MUTEX(pm_lock);
 static DECLARE_WAIT_QUEUE_HEAD(wq);
 static pid_t pm_pid = 0;
 static struct task_struct *wakeup_task = NULL;
@@ -147,7 +153,10 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
     if (cur_pid == pm_pid)
     {
         // call from pm
-        // It means stack inspection begins.
+        // wait until the previous stack inspection will finish
+        mutex_lock(&pm_lock);
+
+        // stack inspection begins.
         mutex_lock(&channel_lock);
         in_stack_inspection = true;
 
@@ -186,7 +195,15 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
                 cond_printk( "[CHANNEL] remove from rbtree: %d (%s, %d)\n",
                         ((pid_t *)buf)[0], get_task_name(), cur_pid );
                 mutex_unlock(&channel_lock);
+
+                // do not inspect stack
+                mutex_unlock(&pm_lock);
             }
+        }
+        else
+        {
+            // do not inspect stack
+            mutex_unlock(&pm_lock);
         }
     }
     else
@@ -263,6 +280,9 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
         wakeup_task = NULL;
         input_size = 0;
         mutex_unlock(&channel_lock);
+
+        // allow the next pm to inspect stack trace
+        mutex_unlock(&pm_lock);
     }
     else
     {
