@@ -32,10 +32,17 @@ static pid_t pm_pid = 0;
 static struct task_struct *wakeup_task = NULL;
 static bool in_stack_inspection = false;
 
+static int *inspect_gids_buffer  = NULL;
+static bool is_requested = false;
+static bool is_responded = false;
+
+
 enum {
     CHANNEL_REGISTER_PM = 0,
     CHANNEL_REGISTER_INSPECTOR,
     CHANNEL_UNREGISTER,
+    CHANNEL_READ_INSPECT_GIDS,
+    CHANNEL_WRITE_INSPECT_GIDS,
 };
 
 inline pid_t current_tid(void)
@@ -302,7 +309,8 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
 {
     struct channel_node* node;
     pid_t cur_pid;
-
+    void __user *ubuf = (void __user *) arg;
+    int i;
     cur_pid = current_pid();
 
     mutex_lock(&channel_lock);
@@ -352,9 +360,43 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
                     cur_pid, get_task_name(), cur_pid );
         }
     }
+
+    if (cur_pid != pm_pid) {
+      // called from requester
+      if (cmd == CHANNEL_READ_INSPECT_GIDS) {
+        mutex_unlock(&channel_lock);
+        wait_event_interruptible(wq, is_responded);
+        mutex_lock(&channel_lock);
+        is_responded = false;
+        mutex_unlock(&channel_lock);
+        return copy_to_user(ubuf, inspect_gids_buffer, (inspect_gids_buffer[0] + 1) * sizeof(int));
+      } else if (cmd == CHANNEL_WRITE_INSPECT_GIDS) {
+        inspect_gids_buffer[0] = ((int*)ubuf)[0];
+        inspect_gids_buffer[1] = ((int*)ubuf)[1];
+        inspect_gids_buffer[2] = ((int*)ubuf)[2];
+        is_requested = true;
+        wake_up_all(&wq);
+      }
+    } else {
+      // called from pm
+      if (cmd == CHANNEL_READ_INSPECT_GIDS) {
+        mutex_unlock(&channel_lock);
+        wait_event_interruptible(wq, is_requested);
+        mutex_lock(&channel_lock);
+        is_requested = false;
+        mutex_unlock(&channel_lock);
+        return copy_to_user(ubuf, inspect_gids_buffer, 3 * sizeof(int));
+      } else if (cmd == CHANNEL_WRITE_INSPECT_GIDS) {
+        inspect_gids_buffer[0] = ((int*)ubuf)[0];
+        for (i = 1; i <= inspect_gids_buffer[0]; ++i)
+	  inspect_gids_buffer[i] = ((int*)ubuf)[i];
+        is_responded = true;
+        wake_up_all(&wq);
+      }
+    }
     mutex_unlock(&channel_lock);
 
-    cond_printk( "[CHANNEL] ioctl (%s, %d)\n", get_task_name(), cur_pid );
+    cond_printk( "[CHANNEL] ioctl (%s, %d, %d)\n", get_task_name(), cmd, cur_pid );
     return 0;
 }
 
@@ -378,7 +420,9 @@ int __init channel_init( void )
     int ret = 0;
     ret = misc_register(&channel_miscdev);
     global_buffer = (char*) kmalloc( BUFF_SIZE, GFP_KERNEL );
+    inspect_gids_buffer = (int*) kmalloc( BUFF_SIZE, GFP_KERNEL );
     memset( global_buffer, 0, BUFF_SIZE);
+    memset( inspect_gids_buffer, 0, BUFF_SIZE);
 
     printk( "[CHANNEL] initialized (%s, %d)\n", get_task_name(), current_pid());
 
