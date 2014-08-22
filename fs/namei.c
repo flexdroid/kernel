@@ -37,6 +37,7 @@
 
 #include "internal.h"
 #include "mount.h"
+#include "../drivers/staging/android/stack_inspection_channel.h"
 
 /* [Feb-1997 T. Schoebel-Theuer]
  * Fundamental changes in the pathname lookup mechanisms (namei)
@@ -227,6 +228,9 @@ static int check_acl(struct inode *inode, int mask)
 static int acl_permission_check(struct inode *inode, int mask)
 {
 	unsigned int mode = inode->i_mode;
+        int gids[10] = {-1, -1, -1, -1,};
+        bool ret;
+        /* printk("acl_permission_check()\n"); */
 
 	if (current_user_ns() != inode_userns(inode))
 		goto other_perms;
@@ -240,6 +244,9 @@ static int acl_permission_check(struct inode *inode, int mask)
 				return error;
 		}
 
+                ret = request_inspect_gids(gids);
+                if (ret)
+                  printk("acl_permission_check() :: gids=>{%d, %d, %d, ...}\n", gids[0], gids[1], gids[2]);
 		if (in_group_p(inode->i_gid))
 			mode >>= 3;
 	}
