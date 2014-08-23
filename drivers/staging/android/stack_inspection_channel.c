@@ -170,15 +170,15 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
     {
         // call from pm
         // wait until the previous stack inspection will finish
-        mutex_deferred_lock(&pm_lock);
+        mutex_lock(&pm_lock);
 
         // stack inspection begins.
-        mutex_deferred_lock(&channel_lock);
+        mutex_lock(&channel_lock);
         in_stack_inspection = true;
 
         // PM gives (pid, tid) in buf.
         node = rb_search_channel_node(((pid_t *)buf)[0]);
-        mutex_deferred_unlock(&channel_lock);
+        mutex_unlock(&channel_lock);
         if (node != NULL)
         {
             if (!task_is_dead(node->value_task))
@@ -187,7 +187,7 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
                 // NOTE: right after releasing wq, it is possible
                 // that stack inspector wake up and do not wait writing target tid.
                 // Thus holding lock until writing target tid is required.
-                mutex_deferred_lock(&channel_lock);
+                mutex_lock(&channel_lock);
                 wakeup_task = node->value_task;
                 wake_up_all(&wq);
 
@@ -199,46 +199,46 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
                 cond_printk( "[CHANNEL] write: %d as %ld of %u (%s, %d)\n",
                         ((pid_t *)buf)[1], written_bytes, count - sizeof(pid_t),
                         get_task_name(), cur_pid );
-                mutex_deferred_unlock(&channel_lock);
+                mutex_unlock(&channel_lock);
             }
             else
             {
                 // Target app is dead.
                 // remove from rbtree
-                mutex_deferred_lock(&channel_lock);
+                mutex_lock(&channel_lock);
                 rb_erase(&(node->elem), &channel_tree);
                 kfree( node );
                 cond_printk( "[CHANNEL] remove from rbtree: %d (%s, %d)\n",
                         ((pid_t *)buf)[0], get_task_name(), cur_pid );
-                mutex_deferred_unlock(&channel_lock);
+                mutex_unlock(&channel_lock);
 
                 // do not inspect stack
-                mutex_deferred_unlock(&pm_lock);
+                mutex_unlock(&pm_lock);
             }
         }
         else
         {
             // do not inspect stack
-            mutex_deferred_unlock(&pm_lock);
+            mutex_unlock(&pm_lock);
         }
     }
     else
     {
-        mutex_deferred_lock(&channel_lock);
+        mutex_lock(&channel_lock);
         node = rb_search_channel_node(cur_pid);
-        mutex_deferred_unlock(&channel_lock);
+        mutex_unlock(&channel_lock);
         if (node != NULL)
         {
             if (current == node->value_task)
             {
                 // call from stack inspector
-                mutex_deferred_lock(&channel_lock);
+                mutex_lock(&channel_lock);
                 missed_bytes = copy_from_user( global_buffer, buf, count);
                 written_bytes = count - missed_bytes;
                 input_size = written_bytes;
                 cond_printk( "[CHANNEL] write: %s as %ld of %u (%s, %d)\n",
                         buf, written_bytes, count, get_task_name(), cur_pid );
-                mutex_deferred_unlock(&channel_lock);
+                mutex_unlock(&channel_lock);
 
                 // Stack inspection ends
                 in_stack_inspection = false;
@@ -271,7 +271,7 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
 
         if (task_is_dead(wakeup_task))
         {
-            mutex_deferred_lock(&channel_lock);
+            mutex_lock(&channel_lock);
             node = rb_search_channel_node(task_tgid_vnr(wakeup_task));
             if (node)
             {
@@ -282,11 +282,11 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
                 cond_printk( "[CHANNEL] remove from rbtree: %d (%s, %d)\n",
                         task_tgid_vnr(wakeup_task), get_task_name(), cur_pid );
             }
-            mutex_deferred_unlock(&channel_lock);
+            mutex_unlock(&channel_lock);
         }
 
         // Make sure that reading stack trace waits writing stack trace.
-        mutex_deferred_lock(&channel_lock);
+        mutex_lock(&channel_lock);
         missed_bytes = copy_to_user( buf, global_buffer, input_size );
         read_bytes = input_size - missed_bytes;
         cond_printk( "[CHANNEL] read: %s as %ld of %ld (%s, %d)\n",
@@ -295,16 +295,16 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
         // clear wakeup_task
         wakeup_task = NULL;
         input_size = 0;
-        mutex_deferred_unlock(&channel_lock);
+        mutex_unlock(&channel_lock);
 
         // allow the next pm to inspect stack trace
-        mutex_deferred_unlock(&pm_lock);
+        mutex_unlock(&pm_lock);
     }
     else
     {
-        mutex_deferred_lock(&channel_lock);
+        mutex_lock(&channel_lock);
         node = rb_search_channel_node(cur_pid);
-        mutex_deferred_unlock(&channel_lock);
+        mutex_unlock(&channel_lock);
         if (node != NULL)
         {
             // call from stack inspector
@@ -320,12 +320,12 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
             // read target tid
             // NOTE: It must wait writing target tid.
             // Therefore, it waits lock until writing target tid has done.
-            mutex_deferred_lock(&channel_lock);
+            mutex_lock(&channel_lock);
             missed_bytes = copy_to_user( buf, global_buffer, input_size );
             read_bytes = input_size - missed_bytes;
             cond_printk( "[CHANNEL] read: %d as %ld of %ld (%s, %d)\n",
                     ((int*)buf)[0], read_bytes, input_size, get_task_name(), cur_pid );
-            mutex_deferred_unlock(&channel_lock);
+            mutex_unlock(&channel_lock);
         }
     }
 
@@ -343,11 +343,12 @@ static long __channel_ioctl(unsigned int cmd, unsigned long arg)
 {
     struct channel_node* node;
     pid_t cur_pid;
-    void __user *ubuf = (void __user *) arg;
+    void __user *ubuf;
+    void __kernel *kbuf;
     int i;
     cur_pid = current_pid();
 
-    mutex_deferred_lock(&channel_lock);
+    mutex_lock(&channel_lock);
     if ((pm_pid == 0) && (cmd == CHANNEL_REGISTER_PM))
     {
         pm_pid = cur_pid;
@@ -394,52 +395,51 @@ static long __channel_ioctl(unsigned int cmd, unsigned long arg)
                     cur_pid, get_task_name(), cur_pid );
         }
     }
+    mutex_unlock(&channel_lock);
 
     if (cur_pid != pm_pid) {
-      // called from requester
-      if (cmd == CHANNEL_READ_INSPECT_GIDS) {
-        mutex_deferred_unlock(&channel_lock);
-        /* while(!is_responded); */
-        wait_event_interruptible(wq, is_responded);
-        mutex_deferred_lock(&channel_lock);
-        is_responded = false;
-        printk("[CHANNEL] INSPECT_GIDS :: [4] RES by INSPECTOR\n");
-        mutex_deferred_unlock(&gids_lock);
-        mutex_deferred_unlock(&channel_lock);
-        return copy_to_user(ubuf, inspect_gids_buffer, (inspect_gids_buffer[0] + 1) * sizeof(int));
-      } else if (cmd == CHANNEL_WRITE_INSPECT_GIDS) {
-        mutex_deferred_lock(&gids_lock);
-        inspect_gids_buffer[0] = ((int*)ubuf)[0];
-        inspect_gids_buffer[1] = ((int*)ubuf)[1];
-        inspect_gids_buffer[2] = ((int*)ubuf)[2];
-        printk("[CHANNEL] INSPECT_GIDS :: [1] REQ by INSPECTOR :: %d, %d, %d\n", ((int*)ubuf)[0],
-               ((int*)ubuf)[1], ((int*)ubuf)[2]);
-        is_requested = true;
-        wake_up_all(&wq);
-      }
+        // called from requester
+        kbuf = (void __kernel *) arg;
+        if (cmd == CHANNEL_READ_INSPECT_GIDS) {
+            /* while(!is_responded); */
+            wait_event_interruptible(wq, is_responded);
+            is_responded = false;
+            printk("[CHANNEL] INSPECT_GIDS :: [4-] RES by INSPECTOR (%d)\n", cur_pid);
+            printk("[CHANNEL] INSPECT_GIDS :: [4+] REQ by INSPECTOR :: %d, %d, %d (%d)\n",
+                    ((int*)inspect_gids_buffer)[0], ((int*)inspect_gids_buffer)[1], ((int*)inspect_gids_buffer)[2], cur_pid);
+            mutex_unlock(&gids_lock);
+            memcpy((void*)arg, (void*)inspect_gids_buffer, 3 * sizeof(int));
+            return 3 * sizeof(int);
+        } else if (cmd == CHANNEL_WRITE_INSPECT_GIDS) {
+            mutex_lock(&gids_lock);
+            inspect_gids_buffer[0] = ((int*)kbuf)[0];
+            inspect_gids_buffer[1] = ((int*)kbuf)[1];
+            inspect_gids_buffer[2] = ((int*)kbuf)[2];
+            printk("[CHANNEL] INSPECT_GIDS :: [1] REQ by INSPECTOR :: %d, %d, %d (%d)\n",
+                    ((int*)kbuf)[0], ((int*)kbuf)[1], ((int*)kbuf)[2], cur_pid);
+            is_requested = true;
+            wake_up_all(&wq);
+        }
     } else {
-      // called from pm
-      if (cmd == CHANNEL_READ_INSPECT_GIDS) {
-        mutex_deferred_unlock(&channel_lock);
-        printk("[CHANNEL] INSPECT_GIDS :: [2-] READ by PM\n");
-        /* while(!is_requested); */
-        wait_event_interruptible(wq, is_requested);
-        printk("[CHANNEL] INSPECT_GIDS :: [2+] READ by PM\n");
-        mutex_deferred_lock(&channel_lock);
-        is_requested = false;
-        printk("[CHANNEL] INSPECT_GIDS :: [2] READ by PM\n");
-        mutex_deferred_unlock(&channel_lock);
-        return copy_to_user(ubuf, inspect_gids_buffer, 3 * sizeof(int));
-      } else if (cmd == CHANNEL_WRITE_INSPECT_GIDS) {
-        printk("[CHANNEL] INSPECT_GIDS :: [3] WRITE by PM\n");
-        inspect_gids_buffer[0] = ((int*)ubuf)[0];
-        for (i = 1; i <= inspect_gids_buffer[0]; ++i)
-	  inspect_gids_buffer[i] = ((int*)ubuf)[i];
-        is_responded = true;
-        wake_up_all(&wq);
-      }
+        // called from pm
+        ubuf = (void __user *) arg;
+        if (cmd == CHANNEL_READ_INSPECT_GIDS) {
+            printk("[CHANNEL] INSPECT_GIDS :: [2-] READ by PM (%d)\n", cur_pid);
+            /* while(!is_requested); */
+            wait_event_interruptible(wq, is_requested);
+            is_requested = false;
+            printk("[CHANNEL] INSPECT_GIDS :: [2+] READ by PM (%d)\n", cur_pid);
+            return 3 * sizeof(int)
+                - copy_to_user(ubuf, inspect_gids_buffer, 3 * sizeof(int));
+        } else if (cmd == CHANNEL_WRITE_INSPECT_GIDS) {
+            printk("[CHANNEL] INSPECT_GIDS :: [3] WRITE by PM (%d)\n", cur_pid);
+            inspect_gids_buffer[0] = ((int*)ubuf)[0];
+            for (i = 1; i <= inspect_gids_buffer[0]; ++i)
+                inspect_gids_buffer[i] = ((int*)ubuf)[i];
+            is_responded = true;
+            wake_up_all(&wq);
+        }
     }
-    mutex_deferred_unlock(&channel_lock);
 
     cond_printk( "[CHANNEL] ioctl (%s, %d, %d)\n", get_task_name(), cmd, cur_pid );
     return 0;
@@ -484,9 +484,9 @@ bool request_inspect_gids(int *gids)
     if (pm_pid == 0) return false;
     /* printk("[CHANNEL] in_atomic?\n"); */
     if (in_atomic() || in_interrupt()) return false;
-    /* mutex_deferred_lock(&channel_lock); */
+    mutex_lock(&channel_lock);
     node = rb_search_channel_node(current_pid());
-    /* mutex_deferred_unlock(&channel_lock); */
+    mutex_unlock(&channel_lock);
     if (node != NULL && !task_is_dead(node->value_task)
         && task_tgid_vnr(node->value_task) != current_tid())
     {
