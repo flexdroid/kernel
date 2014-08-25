@@ -42,7 +42,7 @@ static DEFINE_MUTEX(pm_lock);
 static DEFINE_MUTEX(gids_lock);
 static DECLARE_WAIT_QUEUE_HEAD(wq);
 static pid_t pm_pid = 0;
-static struct task_struct *wakeup_task = NULL;
+static pid_t wakeup_pid = 0;
 static bool in_stack_inspection = false;
 
 static int *inspect_gids_buffer  = NULL;
@@ -144,6 +144,69 @@ out:
 }
 //----< red black tree interface
 
+inline bool is_task_released(pid_t proc_pid)
+{
+    struct channel_node* node;
+    mutex_lock(&channel_lock);
+    node = rb_search_channel_node(proc_pid);
+    mutex_unlock(&channel_lock);
+    return node == NULL;
+}
+
+inline long start_inspection(pid_t target_pid, pid_t target_tid)
+{
+    long written_bytes;
+    struct channel_node* node;
+    pid_t cur_pid;
+
+    written_bytes = 0;
+    cur_pid = current_pid();
+
+    // wait until the previous stack inspection will finish
+    mutex_lock(&pm_lock);
+
+    mutex_lock(&channel_lock);
+    node = rb_search_channel_node(target_pid);
+    mutex_unlock(&channel_lock);
+    if (node != NULL)
+    {
+        mutex_lock(&channel_lock);
+
+        // stack inspection begins.
+        in_stack_inspection = true;
+
+        // write target tid
+        memcpy((void*)global_buffer, (void*)&target_tid, sizeof(pid_t));
+        written_bytes = sizeof(pid_t);
+
+        input_size = written_bytes;
+        cond_printk( "[CHANNEL] write: %d as %ld (%s, %d)\n",
+                target_tid, written_bytes, get_task_name(), cur_pid );
+
+        // wake up target stack inspector
+        wakeup_pid = target_pid;
+        wake_up_all(&wq);
+        mutex_unlock(&channel_lock);
+    }
+    else
+    {
+        // Target app is dead.
+        // Do not inspect stack
+        mutex_unlock(&pm_lock);
+    }
+    return written_bytes;
+}
+
+// Wait remote stack inspection
+// Return true if inspector is dead
+inline bool wait_inspection(void)
+{
+    // It means stack inspection begins before.
+    // Now this thread should wait until stack inspector finshes it.
+    wait_event_interruptible(wq, !in_stack_inspection || is_task_released(wakeup_pid));
+    return is_task_released(wakeup_pid);
+}
+
 static int channel_open( struct inode *inode, struct file *filp )
 {
     printk( "[CHANNEL] opened (%s, %d)\n", get_task_name(), current_pid() );
@@ -152,6 +215,22 @@ static int channel_open( struct inode *inode, struct file *filp )
 
 static int channel_release( struct inode *inode, struct file *filp )
 {
+    // Stack Inspector is dead, so we clear the node of rbtree.
+    // NOTE: In usual, release is independent with the life of proc. (release = close)
+    //       However, in Stack Inspector, release only called at the end of proc.
+    struct channel_node* node;
+    mutex_lock(&channel_lock);
+    node = rb_search_channel_node(current_pid());
+    if (node)
+    {
+        // remove from rbtree
+        rb_erase(&(node->elem), &channel_tree);
+        kfree( node );
+        cond_printk( "[CHANNEL] remove from rbtree: %d (%s, %d)\n",
+                current_pid(), get_task_name(), current_pid() );
+    }
+    mutex_unlock(&channel_lock);
+
     printk( "[CHANNEL] released (%s, %d)\n", get_task_name(), current_pid() );
     return 0;
 }
@@ -169,58 +248,7 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
     if (cur_pid == pm_pid)
     {
         // call from pm
-        // wait until the previous stack inspection will finish
-        mutex_lock(&pm_lock);
-
-        // stack inspection begins.
-        mutex_lock(&channel_lock);
-        in_stack_inspection = true;
-
-        // PM gives (pid, tid) in buf.
-        node = rb_search_channel_node(((pid_t *)buf)[0]);
-        mutex_unlock(&channel_lock);
-        if (node != NULL)
-        {
-            if (!task_is_dead(node->value_task))
-            {
-                // wake up target stack inspector
-                // NOTE: right after releasing wq, it is possible
-                // that stack inspector wake up and do not wait writing target tid.
-                // Thus holding lock until writing target tid is required.
-                mutex_lock(&channel_lock);
-                wakeup_task = node->value_task;
-                wake_up_all(&wq);
-
-                // write target tid
-                missed_bytes = copy_from_user( global_buffer, buf+sizeof(pid_t),
-                        count - sizeof(pid_t));
-                written_bytes = count - sizeof(pid_t) - missed_bytes;
-                input_size = written_bytes;
-                cond_printk( "[CHANNEL] write: %d as %ld of %u (%s, %d)\n",
-                        ((pid_t *)buf)[1], written_bytes, count - sizeof(pid_t),
-                        get_task_name(), cur_pid );
-                mutex_unlock(&channel_lock);
-            }
-            else
-            {
-                // Target app is dead.
-                // remove from rbtree
-                mutex_lock(&channel_lock);
-                rb_erase(&(node->elem), &channel_tree);
-                kfree( node );
-                cond_printk( "[CHANNEL] remove from rbtree: %d (%s, %d)\n",
-                        ((pid_t *)buf)[0], get_task_name(), cur_pid );
-                mutex_unlock(&channel_lock);
-
-                // do not inspect stack
-                mutex_unlock(&pm_lock);
-            }
-        }
-        else
-        {
-            // do not inspect stack
-            mutex_unlock(&pm_lock);
-        }
+        written_bytes = start_inspection(((pid_t *)buf)[0], ((pid_t *)buf)[1]);
     }
     else
     {
@@ -240,7 +268,7 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
                         buf, written_bytes, count, get_task_name(), cur_pid );
                 mutex_unlock(&channel_lock);
 
-                // Stack inspection ends
+                // The end of Stack Inspection
                 in_stack_inspection = false;
                 wake_up_all(&wq);
             }
@@ -265,36 +293,22 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
     if (cur_pid == pm_pid)
     {
         // call from pm
-        // It means stack inspection begins before.
-        // Now this thread should wait until stack inspector finshes it.
-        wait_event_interruptible(wq, !in_stack_inspection || task_is_dead(wakeup_task));
-
-        if (task_is_dead(wakeup_task))
+        if (!wait_inspection())
         {
+            // Make sure that reading stack trace waits writing stack trace.
             mutex_lock(&channel_lock);
-            node = rb_search_channel_node(task_tgid_vnr(wakeup_task));
-            if (node)
-            {
-                // Target app is dead.
-                // remove from rbtree
-                rb_erase(&(node->elem), &channel_tree);
-                kfree( node );
-                cond_printk( "[CHANNEL] remove from rbtree: %d (%s, %d)\n",
-                        task_tgid_vnr(wakeup_task), get_task_name(), cur_pid );
-            }
+            missed_bytes = copy_to_user( buf, global_buffer, input_size );
+            read_bytes = input_size - missed_bytes;
+            cond_printk( "[CHANNEL] read: %s as %ld of %ld (%s, %d)\n",
+                    buf, read_bytes, input_size, get_task_name(), cur_pid );
             mutex_unlock(&channel_lock);
         }
 
-        // Make sure that reading stack trace waits writing stack trace.
+        // clear global variables
         mutex_lock(&channel_lock);
-        missed_bytes = copy_to_user( buf, global_buffer, input_size );
-        read_bytes = input_size - missed_bytes;
-        cond_printk( "[CHANNEL] read: %s as %ld of %ld (%s, %d)\n",
-                buf, read_bytes, input_size, get_task_name(), cur_pid );
-
-        // clear wakeup_task
-        wakeup_task = NULL;
+        wakeup_pid = 0;
         input_size = 0;
+        in_stack_inspection = false;
         mutex_unlock(&channel_lock);
 
         // allow the next pm to inspect stack trace
@@ -315,7 +329,7 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
             // It cause dead-lock,
             // thereby staying wait_event_interruptible() out of CS.
             wait_event_interruptible(wq,
-                    (wakeup_task == current) && in_stack_inspection);
+                    (wakeup_pid == cur_pid) && in_stack_inspection);
 
             // read target tid
             // NOTE: It must wait writing target tid.
@@ -406,7 +420,8 @@ static long __channel_ioctl(unsigned int cmd, unsigned long arg)
             is_responded = false;
             printk("[CHANNEL] INSPECT_GIDS :: [4-] RES by INSPECTOR (%d)\n", cur_pid);
             printk("[CHANNEL] INSPECT_GIDS :: [4+] REQ by INSPECTOR :: %d, %d, %d (%d)\n",
-                    ((int*)inspect_gids_buffer)[0], ((int*)inspect_gids_buffer)[1], ((int*)inspect_gids_buffer)[2], cur_pid);
+                    ((int*)inspect_gids_buffer)[0], ((int*)inspect_gids_buffer)[1],
+                    ((int*)inspect_gids_buffer)[2], cur_pid);
             mutex_unlock(&gids_lock);
             memcpy((void*)arg, (void*)inspect_gids_buffer, 3 * sizeof(int));
             return 3 * sizeof(int);
@@ -477,27 +492,26 @@ int __init channel_init( void )
 
 bool request_inspect_gids(int *gids)
 {
-    size_t size;
-    struct channel_node * node;
-    int ids[4] = {current_uid(), current_pid(), current_tid()};
+    //int ids[4] = {current_uid(), current_pid(), current_tid()};
     if (gids == NULL) return false;
     if (pm_pid == 0) return false;
-    /* printk("[CHANNEL] in_atomic?\n"); */
     if (in_atomic() || in_interrupt()) return false;
-    mutex_lock(&channel_lock);
-    node = rb_search_channel_node(current_pid());
-    mutex_unlock(&channel_lock);
-    if (node != NULL && !task_is_dead(node->value_task)
-        && task_tgid_vnr(node->value_task) != current_tid())
+    if (!start_inspection(current_pid(), current_tid())) return false;
+    if (!wait_inspection())
     {
-      printk("[CHANNEL] __channel_ioctl(CHANNEL_WRITE_INSPECT_GIDS, {%d, %d, %d}\n", ids[0], ids[1], ids[2]);
-      size = __channel_ioctl(CHANNEL_WRITE_INSPECT_GIDS, (long) ids);
-      printk("[CHANNEL] __channel_ioctl(CHANNEL_READ_INSPECT_GIDS, int *)\n");
-      size = __channel_ioctl(CHANNEL_READ_INSPECT_GIDS, (long) gids);
-      printk("[CHANNEL] __channel_ioctl(CHANNEL_READ_INSPECT_GIDS, int *) :: gids[={%d, %d, %d, ...}\n", gids[0], gids[1], gids[2]);
-      return true;
+        // do gids inspection using stack trace
+
+        // clear global variables
+        mutex_lock(&channel_lock);
+        wakeup_pid = 0;
+        input_size = 0;
+        in_stack_inspection = false;
+        mutex_unlock(&channel_lock);
+
+        // allow the next pm to inspect stack trace
+        mutex_unlock(&pm_lock);
     }
-    return false;
+    return true;
 }
 
 device_initcall( channel_init );
