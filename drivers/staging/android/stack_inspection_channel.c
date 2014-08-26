@@ -14,6 +14,8 @@
 #include <linux/rbtree.h>
 #include <linux/cred.h>
 
+#include <linux/sched.h>
+
 #define  BUFF_SIZE      (16 * 1024)
 #define  NAME_SIZE      128
 #define  MAJOR_NUMBER   250
@@ -184,6 +186,7 @@ inline long start_inspection(pid_t target_pid, pid_t target_tid)
                 target_tid, written_bytes, get_task_name(), cur_pid );
 
         // wake up target stack inspector
+        set_user_nice(node->value_task, 19);
         wakeup_pid = target_pid;
         wake_up_all(&wq);
         mutex_unlock(&channel_lock);
@@ -264,7 +267,7 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
                 missed_bytes = copy_from_user( global_buffer, buf, count);
                 written_bytes = count - missed_bytes;
                 input_size = written_bytes;
-                cond_printk( "[CHANNEL] write: %s as %ld of %u (%s, %d)\n",
+                cond_printk( "[CHANNEL] write: %.20s as %ld of %u (%s, %d)\n",
                         buf, written_bytes, count, get_task_name(), cur_pid );
                 mutex_unlock(&channel_lock);
 
@@ -299,7 +302,7 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
             mutex_lock(&channel_lock);
             missed_bytes = copy_to_user( buf, global_buffer, input_size );
             read_bytes = input_size - missed_bytes;
-            cond_printk( "[CHANNEL] read: %s as %ld of %ld (%s, %d)\n",
+            cond_printk( "[CHANNEL] read: %.20s as %ld of %ld (%s, %d)\n",
                     buf, read_bytes, input_size, get_task_name(), cur_pid );
             mutex_unlock(&channel_lock);
         }
