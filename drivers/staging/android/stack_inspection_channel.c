@@ -15,8 +15,10 @@
 #include <linux/cred.h>
 
 #include <linux/sched.h>
+#include <linux/semaphore.h>
 
 #define  BUFF_SIZE      (16 * 1024)
+#define  BIG_BUFF_SIZE  (16 * 1024)
 #define  NAME_SIZE      128
 #define  MAJOR_NUMBER   250
 
@@ -32,32 +34,46 @@
 #define mutex_deferred_unlock(lock) \
   if (pm_pid != 0) mutex_unlock(lock);
 
+/* for logging */
 static const bool do_prtk = false;
-
-static char *global_buffer  = NULL;
-static long input_size = 0;
 static char current_task_name[NAME_SIZE];
 static DEFINE_MUTEX(tname_lock);
 
+/* for stack inspection */
+static char *global_buffer  = NULL;
+static long input_size = 0;
 static DEFINE_MUTEX(channel_lock);
 static DEFINE_MUTEX(pm_lock);
-static DEFINE_MUTEX(gids_lock);
 static DECLARE_WAIT_QUEUE_HEAD(wq);
 static pid_t pm_pid = 0;
 static pid_t wakeup_pid = 0;
 static bool in_stack_inspection = false;
 
-static int *inspect_gids_buffer  = NULL;
-static bool is_requested = false;
-static bool is_responded = false;
-
+/* for data transfer */
+struct semaphore req_sema;
+struct semaphore res_sema;
+static int req_uid = 0;
+static int req_code = 0;
+static char *data_trans_buffer  = NULL;
+static DEFINE_MUTEX(data_lock);
 
 enum {
     CHANNEL_REGISTER_PM = 0,
     CHANNEL_REGISTER_INSPECTOR,
     CHANNEL_UNREGISTER,
-    CHANNEL_READ_INSPECT_GIDS,
-    CHANNEL_WRITE_INSPECT_GIDS,
+    CHANNEL_PM_WAIT,
+    CHANNEL_REQUEST_PM,
+    CHANNEL_PM_RESPONSE,
+};
+
+enum {
+    GET_SANDBOXNAMES = 0,
+    GET_GIDS,
+};
+
+struct sdb_packet {
+    int size;
+    void* addr;
 };
 
 static long __channel_ioctl(unsigned int, unsigned long);
@@ -80,7 +96,90 @@ inline char* get_task_name(void)
     return current_task_name;
 }
 
-//----> red black tree interface
+//----> gids tree interface
+static struct rb_root gids_tree = RB_ROOT;
+struct gids_node {
+    struct rb_node elem;
+    int key_uid;
+    int **value_gids;
+};
+
+static inline struct gids_node * rb_search_gids_node(int key)
+{
+    struct rb_node * n = gids_tree.rb_node;
+    struct gids_node * node;
+
+    while (n)
+    {
+        node = rb_entry(n, struct gids_node, elem);
+
+        if (key < node->key_uid)
+            n = n->rb_left;
+        else if (key > node->key_uid)
+            n = n->rb_right;
+        else
+            return node;
+    }
+    return NULL;
+}
+
+static inline struct gids_node * __rb_insert_gids_node(
+        int key,
+        struct rb_node * node)
+{
+    struct rb_node ** p = &(gids_tree.rb_node);
+    struct rb_node * parent = NULL;
+    struct gids_node * ret;
+
+    while (*p)
+    {
+        parent = *p;
+        ret = rb_entry(parent, struct gids_node, elem);
+
+        if (key < ret->key_uid)
+            p = &(*p)->rb_left;
+        else if (key > ret->key_uid)
+            p = &(*p)->rb_right;
+        else
+            return ret;
+    }
+
+    rb_link_node(node, parent, p);
+
+    return NULL;
+}
+
+static inline struct gids_node * rb_insert_gids_node(
+        int key,
+        struct rb_node * node)
+{
+    struct gids_node * ret;
+    if ((ret = __rb_insert_gids_node(key, node)))
+        goto out;
+    rb_insert_color(node, &gids_tree);
+out:
+    return ret;
+}
+//----< gids tree interface
+
+const static int GID_DELIMITER = -1;
+static int** create_gids(int* buf, int size)
+{
+    int** gids = (int**) kmalloc( size*sizeof(int*), GFP_KERNEL );
+    int* gid_arr;
+    int offset = 0, i, j;
+    for (i = 0; i < size; ++i) {
+        for (j = 0; buf[j+offset] != GID_DELIMITER; ++j);
+        gid_arr = (int*) kmalloc( j*sizeof(int), GFP_KERNEL );
+        for (j = 0; buf[j+offset] != GID_DELIMITER; ++j)
+            gid_arr[j] = buf[j+offset];
+        offset += (j + 1);
+        gids[i] = gid_arr;
+    }
+    return gids;
+}
+
+//----> channel tree interface
 static struct rb_root channel_tree = RB_ROOT;
 struct channel_node {
     struct rb_node elem;
@@ -144,7 +243,7 @@ static inline struct channel_node * rb_insert_channel_node(
 out:
     return ret;
 }
-//----< red black tree interface
+//----< channel tree interface
 
 inline bool is_task_released(pid_t proc_pid)
 {
@@ -208,6 +307,25 @@ inline bool wait_inspection(void)
     // Now this thread should wait until stack inspector finshes it.
     wait_event_interruptible(wq, !in_stack_inspection || is_task_released(wakeup_pid));
     return is_task_released(wakeup_pid);
+}
+
+inline long request_data(int code, void __user * ubuf)
+{
+    long size = 0;
+    mutex_lock(&data_lock);
+    req_uid = current_uid();
+    req_code = code;
+    up(&req_sema);
+    down(&res_sema);
+    if (code == GET_SANDBOXNAMES && ubuf)
+    {
+        size = ((int*)data_trans_buffer)[0];
+        memcpy(ubuf, (void*)&((int*)data_trans_buffer)[1], size);
+    }
+    req_uid = 0;
+    req_code = 0;
+    mutex_unlock(&data_lock);
+    return size;
 }
 
 static int channel_open( struct inode *inode, struct file *filp )
@@ -359,10 +477,10 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
 static long __channel_ioctl(unsigned int cmd, unsigned long arg)
 {
     struct channel_node* node;
+    struct gids_node* __gids_node;
     pid_t cur_pid;
     void __user *ubuf;
-    void __kernel *kbuf;
-    int i;
+    long size = 0;
     cur_pid = current_pid();
 
     mutex_lock(&channel_lock);
@@ -379,7 +497,7 @@ static long __channel_ioctl(unsigned int cmd, unsigned long arg)
         }
         cond_printk( "[CHANNEL] pm_pid=%d (%s, %d)\n", pm_pid, get_task_name(), cur_pid );
     }
-    if (cmd == CHANNEL_REGISTER_INSPECTOR)
+    if ((cmd == CHANNEL_REGISTER_INSPECTOR) && (cur_pid != pm_pid))
     {
         node = rb_search_channel_node(cur_pid);
         if (node == NULL)
@@ -414,53 +532,71 @@ static long __channel_ioctl(unsigned int cmd, unsigned long arg)
     }
     mutex_unlock(&channel_lock);
 
-    if (cur_pid != pm_pid) {
-        // called from requester
-        kbuf = (void __kernel *) arg;
-        if (cmd == CHANNEL_READ_INSPECT_GIDS) {
-            /* while(!is_responded); */
-            wait_event_interruptible(wq, is_responded);
-            is_responded = false;
-            printk("[CHANNEL] INSPECT_GIDS :: [4-] RES by INSPECTOR (%d)\n", cur_pid);
-            printk("[CHANNEL] INSPECT_GIDS :: [4+] REQ by INSPECTOR :: %d, %d, %d (%d)\n",
-                    ((int*)inspect_gids_buffer)[0], ((int*)inspect_gids_buffer)[1],
-                    ((int*)inspect_gids_buffer)[2], cur_pid);
-            mutex_unlock(&gids_lock);
-            memcpy((void*)arg, (void*)inspect_gids_buffer, 3 * sizeof(int));
-            return 3 * sizeof(int);
-        } else if (cmd == CHANNEL_WRITE_INSPECT_GIDS) {
-            mutex_lock(&gids_lock);
-            inspect_gids_buffer[0] = ((int*)kbuf)[0];
-            inspect_gids_buffer[1] = ((int*)kbuf)[1];
-            inspect_gids_buffer[2] = ((int*)kbuf)[2];
-            printk("[CHANNEL] INSPECT_GIDS :: [1] REQ by INSPECTOR :: %d, %d, %d (%d)\n",
-                    ((int*)kbuf)[0], ((int*)kbuf)[1], ((int*)kbuf)[2], cur_pid);
-            is_requested = true;
-            wake_up_all(&wq);
+    if (cmd == CHANNEL_PM_WAIT)
+    {
+        if (cur_pid == pm_pid)
+        {
+            down(&req_sema);
+            ubuf = (void __user *)arg;
+            ((int *)ubuf)[0] = req_uid;
+            ((int *)ubuf)[1] = req_code;
         }
-    } else {
-        // called from pm
-        ubuf = (void __user *) arg;
-        if (cmd == CHANNEL_READ_INSPECT_GIDS) {
-            printk("[CHANNEL] INSPECT_GIDS :: [2-] READ by PM (%d)\n", cur_pid);
-            /* while(!is_requested); */
-            wait_event_interruptible(wq, is_requested);
-            is_requested = false;
-            printk("[CHANNEL] INSPECT_GIDS :: [2+] READ by PM (%d)\n", cur_pid);
-            return 3 * sizeof(int)
-                - copy_to_user(ubuf, inspect_gids_buffer, 3 * sizeof(int));
-        } else if (cmd == CHANNEL_WRITE_INSPECT_GIDS) {
-            printk("[CHANNEL] INSPECT_GIDS :: [3] WRITE by PM (%d)\n", cur_pid);
-            inspect_gids_buffer[0] = ((int*)ubuf)[0];
-            for (i = 1; i <= inspect_gids_buffer[0]; ++i)
-                inspect_gids_buffer[i] = ((int*)ubuf)[i];
-            is_responded = true;
-            wake_up_all(&wq);
+    }
+
+    if (cmd == CHANNEL_REQUEST_PM)
+    {
+        mutex_lock(&channel_lock);
+        node = rb_search_channel_node(cur_pid);
+        mutex_unlock(&channel_lock);
+        // stack inspector cannot request gids
+        if (node)
+            size = request_data(GET_SANDBOXNAMES, (void __user *)arg);
+    }
+
+    if (cmd == CHANNEL_PM_RESPONSE)
+    {
+        if (cur_pid == pm_pid)
+        {
+            ubuf = (void __user *)arg;
+            if (ubuf == NULL)
+                up(&res_sema);
+            else
+            {
+                if (req_code == GET_GIDS)
+                {
+                    // get gids
+                    memcpy(&size, ubuf, sizeof(int));
+
+                    // construct gids tree
+                    __gids_node = (struct gids_node*) kmalloc(
+                            sizeof(struct gids_node), GFP_KERNEL );
+                    __gids_node->key_uid = req_uid;
+                    __gids_node->value_gids = create_gids(&((int*)ubuf)[1], size);
+                    rb_insert_gids_node(req_uid, &(__gids_node->elem));
+
+                    up(&res_sema);
+                }
+                else if (req_code == GET_SANDBOXNAMES)
+                {
+                    // get string size
+                    memcpy((void*)data_trans_buffer,
+                            &(((struct sdb_packet*)ubuf)->size), sizeof(int));
+                    size = ((int*)data_trans_buffer)[0];
+
+                    // get sandbox names
+                    memcpy((void*)&((int*)data_trans_buffer)[1],
+                            ((struct sdb_packet*)ubuf)->addr, size);
+
+                    up(&res_sema);
+                }
+                else
+                    up(&res_sema);
+            }
         }
     }
 
     cond_printk( "[CHANNEL] ioctl (%s, %d, %d)\n", get_task_name(), cmd, cur_pid );
-    return 0;
+    return size;
 }
 
 static struct file_operations channel_fops = {
@@ -483,10 +619,12 @@ int __init channel_init( void )
     int ret = 0;
     ret = misc_register(&channel_miscdev);
     global_buffer = (char*) kmalloc( BUFF_SIZE, GFP_KERNEL );
-    inspect_gids_buffer = (int*) kmalloc( BUFF_SIZE, GFP_KERNEL );
+    data_trans_buffer = (char*) kmalloc( BIG_BUFF_SIZE, GFP_KERNEL );
     memset( global_buffer, 0, BUFF_SIZE);
-    memset( inspect_gids_buffer, 0, BUFF_SIZE);
+    memset( data_trans_buffer, 0, BIG_BUFF_SIZE);
 
+    sema_init(&req_sema, 0);
+    sema_init(&res_sema, 0);
     printk( "[CHANNEL] initialized (%s, %d)\n", get_task_name(), current_pid());
 
     return ret;
