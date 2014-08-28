@@ -245,15 +245,6 @@ out:
 }
 //----< channel tree interface
 
-inline bool is_task_released(pid_t proc_pid)
-{
-    struct channel_node* node;
-    mutex_lock(&channel_lock);
-    node = rb_search_channel_node(proc_pid);
-    mutex_unlock(&channel_lock);
-    return node == NULL;
-}
-
 inline long start_inspection(pid_t target_pid, pid_t target_tid)
 {
     long written_bytes;
@@ -299,16 +290,6 @@ inline long start_inspection(pid_t target_pid, pid_t target_tid)
     return written_bytes;
 }
 
-// Wait remote stack inspection
-// Return true if inspector is dead
-inline bool wait_inspection(void)
-{
-    // It means stack inspection begins before.
-    // Now this thread should wait until stack inspector finshes it.
-    wait_event_interruptible(wq, !in_stack_inspection || is_task_released(wakeup_pid));
-    return is_task_released(wakeup_pid);
-}
-
 inline long request_data(int code, void __user * ubuf)
 {
     long size = 0;
@@ -340,15 +321,22 @@ static int channel_release( struct inode *inode, struct file *filp )
     // NOTE: In usual, release is independent with the life of proc. (release = close)
     //       However, in Stack Inspector, release only called at the end of proc.
     struct channel_node* node;
+    pid_t cur_pid = current_pid();
+
     mutex_lock(&channel_lock);
-    node = rb_search_channel_node(current_pid());
+    node = rb_search_channel_node(cur_pid);
     if (node)
     {
         // remove from rbtree
         rb_erase(&(node->elem), &channel_tree);
         kfree( node );
         cond_printk( "[CHANNEL] remove from rbtree: %d (%s, %d)\n",
-                current_pid(), get_task_name(), current_pid() );
+                cur_pid, get_task_name(), cur_pid );
+    }
+    if (cur_pid == wakeup_pid && in_stack_inspection)
+    {
+        wakeup_pid = 0;
+        in_stack_inspection = false;
     }
     mutex_unlock(&channel_lock);
 
@@ -385,8 +373,8 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
                 missed_bytes = copy_from_user( global_buffer, buf, count);
                 written_bytes = count - missed_bytes;
                 input_size = written_bytes;
-                cond_printk( "[CHANNEL] write: %.20s as %ld of %u (%s, %d)\n",
-                        buf, written_bytes, count, get_task_name(), cur_pid );
+                cond_printk( "[CHANNEL] write: %ld of %u (%s, %d)\n",
+                        written_bytes, count, get_task_name(), cur_pid );
                 mutex_unlock(&channel_lock);
 
                 // The end of Stack Inspection
@@ -414,16 +402,17 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
     if (cur_pid == pm_pid)
     {
         // call from pm
-        if (!wait_inspection())
+        wait_event_interruptible(wq, !in_stack_inspection);
+        mutex_lock(&channel_lock);
+        if (wakeup_pid)
         {
             // Make sure that reading stack trace waits writing stack trace.
-            mutex_lock(&channel_lock);
             missed_bytes = copy_to_user( buf, global_buffer, input_size );
             read_bytes = input_size - missed_bytes;
-            cond_printk( "[CHANNEL] read: %.20s as %ld of %ld (%s, %d)\n",
-                    buf, read_bytes, input_size, get_task_name(), cur_pid );
-            mutex_unlock(&channel_lock);
+            cond_printk( "[CHANNEL] read: %ld of %ld (%s, %d)\n",
+                    read_bytes, input_size, get_task_name(), cur_pid );
         }
+        mutex_unlock(&channel_lock);
 
         // clear global variables
         mutex_lock(&channel_lock);
@@ -638,20 +627,21 @@ bool request_inspect_gids(int *gids)
     if (pm_pid == 0) return false;
     if (in_atomic() || in_interrupt()) return false;
     if (!start_inspection(current_pid(), current_tid())) return false;
-    if (!wait_inspection())
+    wait_event_interruptible(wq, !in_stack_inspection);
+    mutex_lock(&channel_lock);
+    if (wakeup_pid)
     {
         // do gids inspection using stack trace
 
         // clear global variables
-        mutex_lock(&channel_lock);
         wakeup_pid = 0;
         input_size = 0;
         in_stack_inspection = false;
-        mutex_unlock(&channel_lock);
 
         // allow the next pm to inspect stack trace
         mutex_unlock(&pm_lock);
     }
+    mutex_unlock(&channel_lock);
     return true;
 }
 
