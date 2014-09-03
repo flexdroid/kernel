@@ -188,6 +188,8 @@ static void create_gids_map(void __user *ubuf)
         /* set # of sandbox */
         gids_map[i].sbx_size = ((int*)ubuf)[ofs++];
 
+        if (!gids_map[i].sbx_size) continue;
+
         /* alloc gids size array */
         gids_map[i].gids_size = kzalloc(
                 sizeof(int)*gids_map[i].sbx_size,
@@ -208,6 +210,8 @@ static void create_gids_map(void __user *ubuf)
         for (j = 0; j < gids_map[i].sbx_size; ++j) {
             /* set # of gids */
             gids_map[i].gids_size[j] = ((int*)ubuf)[ofs++];
+
+            if (!gids_map[i].gids_size[j]) continue;
 
             /* alloc gids array */
             gids_map[i].sbx_gids[j] = kzalloc(
@@ -580,6 +584,7 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
 
             mutex_lock(&channel_lock);
             create_gids_map(ubuf);
+            printk( "[CHANNEL] create_gids_map\n");
             mutex_unlock(&channel_lock);
         }
     }
