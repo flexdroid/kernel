@@ -53,7 +53,6 @@ static bool in_stack_inspection = false;
 struct semaphore req_sema;
 struct semaphore res_sema;
 static int req_uid = 0;
-static int req_code = 0;
 static void *data_trans_buffer  = NULL;
 static DEFINE_MUTEX(data_lock);
 
@@ -65,11 +64,6 @@ enum {
     CHANNEL_REQUEST_PM,
     CHANNEL_PM_RESPONSE,
     CHANNEL_REGISTER_GIDS,
-};
-
-enum {
-    GET_SANDBOXNAMES = 0,
-    GET_GIDS,
 };
 
 struct sdb_packet {
@@ -94,97 +88,6 @@ inline char* get_task_name(void)
     current_task_name[sizeof(current->comm)] = '\0';
     return current_task_name;
 }
-
-//----> gids tree interface
-static struct rb_root gids_tree = RB_ROOT;
-struct gids_node {
-    struct rb_node elem;
-    int key_uid;
-    int **value_gids; /* value_gids[0] is length of array */
-    int sbx_size;
-};
-
-static inline struct gids_node * rb_search_gids_node(int key)
-{
-    struct rb_node * n = gids_tree.rb_node;
-    struct gids_node * node;
-
-    while (n)
-    {
-        node = rb_entry(n, struct gids_node, elem);
-
-        if (key < node->key_uid)
-            n = n->rb_left;
-        else if (key > node->key_uid)
-            n = n->rb_right;
-        else
-            return node;
-    }
-    return NULL;
-}
-
-static inline struct gids_node * __rb_insert_gids_node(
-        int key,
-        struct rb_node * node)
-{
-    struct rb_node ** p = &(gids_tree.rb_node);
-    struct rb_node * parent = NULL;
-    struct gids_node * ret;
-
-    while (*p)
-    {
-        parent = *p;
-        ret = rb_entry(parent, struct gids_node, elem);
-
-        if (key < ret->key_uid)
-            p = &(*p)->rb_left;
-        else if (key > ret->key_uid)
-            p = &(*p)->rb_right;
-        else
-            return ret;
-    }
-
-    rb_link_node(node, parent, p);
-
-    return NULL;
-}
-
-static inline struct gids_node * rb_insert_gids_node(
-        int key,
-        struct rb_node * node)
-{
-    struct gids_node * ret;
-    if ((ret = __rb_insert_gids_node(key, node)))
-        goto out;
-    rb_insert_color(node, &gids_tree);
-out:
-    return ret;
-}
-//----< gids tree interface
-
-/*
-const static int GID_DELIMITER = -1;
-static int** create_gids(int* buf, int size)
-{
-    int** gids = NULL;
-    int* gid_arr;
-    int offset = 0, i, j;
-    if (size == 0) {
-        return NULL;
-    }
-    gids = kzalloc(size*sizeof(int*), GFP_KERNEL);
-    for (i = 0; i < size; ++i) {
-        for (j = 0; buf[j+offset] != GID_DELIMITER; ++j);
-        gid_arr = kzalloc((j+1)*sizeof(int), GFP_KERNEL);
-        gid_arr[0] = j;
-        for (j = 0; buf[j+offset] != GID_DELIMITER; ++j)
-            gid_arr[j+1] = buf[j+offset];
-        offset += (j + 1);
-        gids[i] = gid_arr;
-    }
-    return gids;
-}
-*/
 
 //----> channel tree interface
 static struct rb_root channel_tree = RB_ROOT;
@@ -252,6 +155,77 @@ out:
 }
 //----< channel tree interface
 
+/* uid - sbx - gids map */
+static bool is_gids_set = false;
+static int uid_size = 0;
+struct gids_elem {
+    int uid;
+    int sbx_size;
+    int* gids_size;
+    int** sbx_gids;
+};
+static struct gids_elem* gids_map = NULL;
+
+static void create_gids_map(void __user *ubuf)
+{
+    int i, j, k;
+    int ofs = 0;
+
+    /* set # of uid */
+    uid_size = ((int*)ubuf)[ofs++];
+
+    /* alloc gids_elem array */
+    gids_map = kzalloc(sizeof(struct gids_elem)*uid_size, GFP_KERNEL);
+    if (gids_map == NULL) {
+        printk("[CHANNEL] alloc fail %d\n", __LINE__);
+    }
+
+    /* for each uid */
+    for (i = 0; i < uid_size; ++i) {
+        /* set uid */
+        gids_map[i].uid = ((int*)ubuf)[ofs++];
+
+        /* set # of sandbox */
+        gids_map[i].sbx_size = ((int*)ubuf)[ofs++];
+
+        /* alloc gids size array */
+        gids_map[i].gids_size = kzalloc(
+                sizeof(int)*gids_map[i].sbx_size,
+                GFP_KERNEL);
+        if (gids_map[i].gids_size == NULL) {
+            printk("[CHANNEL] alloc fail %d\n", __LINE__);
+        }
+
+        /* alloc sandbox-to-gids pointers */
+        gids_map[i].sbx_gids = kzalloc(
+                sizeof(int*)*gids_map[i].sbx_size,
+                GFP_KERNEL);
+        if (gids_map[i].sbx_gids == NULL) {
+            printk("[CHANNEL] alloc fail %d\n", __LINE__);
+        }
+
+        /* for each sandbox */
+        for (j = 0; j < gids_map[i].sbx_size; ++j) {
+            /* set # of gids */
+            gids_map[i].gids_size[j] = ((int*)ubuf)[ofs++];
+
+            /* alloc gids array */
+            gids_map[i].sbx_gids[j] = kzalloc(
+                    sizeof(int)*gids_map[i].gids_size[j],
+                    GFP_KERNEL);
+            if (gids_map[i].sbx_gids[j] == NULL) {
+                printk("[CHANNEL] alloc fail %d\n", __LINE__);
+            }
+
+            for (k = 0; k < gids_map[i].gids_size[j]; ++k) {
+                gids_map[i].sbx_gids[j][k] = ((int*)ubuf)[ofs++];
+            }
+        }
+    }
+
+    is_gids_set = true;
+}
+
 inline long start_inspection(pid_t target_pid, pid_t target_tid)
 {
     long written_bytes;
@@ -297,12 +271,11 @@ inline long start_inspection(pid_t target_pid, pid_t target_tid)
     return written_bytes;
 }
 
-inline long request_data(int code, void __user * ubuf)
+inline long request_data(void __user * ubuf)
 {
     long size = 0;
     mutex_lock(&data_lock);
     req_uid = current_uid();
-    req_code = code;
     up(&req_sema);
     down(&res_sema);
 
@@ -313,7 +286,6 @@ inline long request_data(int code, void __user * ubuf)
     }
 
     req_uid = 0;
-    req_code = 0;
     mutex_unlock(&data_lock);
     return size;
 }
@@ -491,6 +463,7 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
     pid_t cur_pid;
     void __user *ubuf;
     long size = 0;
+    long err = 0;
     cur_pid = current_pid();
 
     printk( "[CHANNEL] %s: %d---->\n", __func__, cur_pid);
@@ -556,7 +529,6 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
             down(&req_sema);
             ubuf = (void __user *)arg;
             ((int *)ubuf)[0] = req_uid;
-            ((int *)ubuf)[1] = req_code;
         }
     }
 
@@ -565,9 +537,8 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
         mutex_lock(&channel_lock);
         node = rb_search_channel_node(cur_pid);
         mutex_unlock(&channel_lock);
-        // stack inspector cannot request gids
         if (node)
-            size = request_data(0, (void __user *)arg);
+            size = request_data((void __user *)arg);
     }
 
     if (cmd == CHANNEL_PM_RESPONSE)
@@ -577,21 +548,40 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
             ubuf = (void __user *)arg;
             if (ubuf)
             {
-                // get string size
-                memcpy((void*)data_trans_buffer,
-                        &(((struct sdb_packet*)ubuf)->size), sizeof(int));
-                size = ((int*)data_trans_buffer)[0];
+                if (copy_from_user((void*)data_trans_buffer,
+                            &(((struct sdb_packet*)ubuf)->size),
+                            sizeof(int))) {
+                    printk( "[CHANNEL] copy fail %d\n", __LINE__);
+                    size = 0;
+                } else {
+                    size = ((int*)data_trans_buffer)[0];
 
-                // get sandbox names
-                memcpy((void*)&((int*)data_trans_buffer)[1],
-                        ((struct sdb_packet*)ubuf)->addr, size);
+                    // get sandbox names
+                    err = copy_from_user((void*)&((int*)data_trans_buffer)[1],
+                            (void __user *)((struct sdb_packet*)ubuf)->addr,
+                            size);
+                    if (err) {
+                        printk( "[CHANNEL] copy fail %d\n", __LINE__);
+                        size = 0;
+                    }
+                }
             }
             up(&res_sema);
         }
     }
 
-    if (cmd == CHANNEL_PM_RESPONSE)
+    if (cmd == CHANNEL_REGISTER_GIDS)
     {
+        if (cur_pid == pm_pid && !is_gids_set)
+        {
+            ubuf = (void __user *)arg;
+            if (!access_ok(VERIFY_READ, ubuf, sizeof(*ubuf)))
+                return 0;
+
+            mutex_lock(&channel_lock);
+            create_gids_map(ubuf);
+            mutex_unlock(&channel_lock);
+        }
     }
 
     cond_printk( "[CHANNEL] ioctl (%s, %d, %d)\n", get_task_name(), cmd, cur_pid );
@@ -633,11 +623,7 @@ int request_inspect_gids(int *gids)
 {
     int cur_uid;
     int cur_pid = current_pid();
-    struct gids_node* gnode;
     struct channel_node* cnode;
-    int size;
-    int ret, i, j, k, idx, gsize, gid;
-    bool is_redundant;
 
     /* do it only after initialization */
     if (pm_pid == 0) return 0;
@@ -667,55 +653,15 @@ int request_inspect_gids(int *gids)
 
     cur_uid = current_uid();
 
-    printk("[CHANNEL] gids %d ----> request\n", cur_pid);
-    /* search gids */
-    mutex_lock(&channel_lock);
-    gnode = rb_search_gids_node(cur_uid);
-    mutex_unlock(&channel_lock);
-    if (!gnode) {
-        /* request gids */
-        request_data(GET_GIDS, NULL);
-
-        /* search gids */
-        mutex_lock(&channel_lock);
-        gnode = rb_search_gids_node(cur_uid);
-        mutex_unlock(&channel_lock);
-    }
-    printk("[CHANNEL] gids %d ----< request\n", cur_pid);
-
     /* do gids inspection for only necessary threads */
-    if (!gnode) return 0;
-    if (!gnode->value_gids) return 0;
 
-    printk("[CHANNEL] gids %d ---->\n", cur_pid);
     if (!start_inspection(cur_pid, current_tid())) return 0;
 
     wait_event_interruptible(wq, !in_stack_inspection);
 
     /* do gids inspection using stack trace */
-    ret = 0;
     mutex_lock(&channel_lock);
     if (wakeup_tsk) {
-        size = (int)(input_size/sizeof(int));
-        for (i = 0;i < size;++i) {
-            idx = ((int*)global_buffer)[i];
-            if (idx < gnode->sbx_size) {
-                gsize = gnode->value_gids[idx][0];
-                for (j = 0; j < gsize; ++j) {
-                    gid = gnode->value_gids[idx][j+1];
-                    is_redundant = false;
-                    for (k = 0; k < ret; ++k) {
-                        if (gids[k] == gid) {
-                            is_redundant = true;
-                            break;
-                        }
-                    }
-                    if (!is_redundant) {
-                        gids[ret++] = gid;
-                    }
-                }
-            }
-        }
     }
     mutex_unlock(&channel_lock);
 
@@ -728,9 +674,8 @@ int request_inspect_gids(int *gids)
 
     // allow the next pm to inspect stack trace
     mutex_unlock(&pm_lock);
-    printk("[CHANNEL] gids %d ----<\n", cur_pid);
 
-    return ret ? -1 : ret;
+    return -1;
 }
 
 device_initcall( channel_init );
