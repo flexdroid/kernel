@@ -166,10 +166,26 @@ struct gids_elem {
 };
 static struct gids_elem* gids_map = NULL;
 
+static struct gids_elem* search_gids(int uid)
+{
+    int mid, lh, rh;
+    lh = 0;
+    rh = uid_size - 1;
+    while (lh < rh) {
+        mid = (lh+rh) / 2;
+        if (gids_map[mid].uid < uid)
+            lh = mid + 1;
+        else
+            rh = mid;
+    }
+    return gids_map[lh].uid == uid ? &gids_map[lh] : NULL;
+}
+
 static void create_gids_map(void __user *ubuf)
 {
     int i, j, k;
     int ofs = 0;
+    int prev_uid = -1;
 
     /* set # of uid */
     uid_size = ((int*)ubuf)[ofs++];
@@ -184,6 +200,12 @@ static void create_gids_map(void __user *ubuf)
     for (i = 0; i < uid_size; ++i) {
         /* set uid */
         gids_map[i].uid = ((int*)ubuf)[ofs++];
+        if (gids_map[i].uid < prev_uid) {
+            printk("[CHANNEL] uid is not sorted %d < %d\n",
+                    gids_map[i].uid, prev_uid);
+            prev_uid = gids_map[i].uid;
+        }
+        printk("[CHANNEL]create_gids_map uid=%d\n", gids_map[i].uid);
 
         /* set # of sandbox */
         gids_map[i].sbx_size = ((int*)ubuf)[ofs++];
@@ -623,12 +645,39 @@ int __init channel_init( void )
     return ret;
 }
 
+/* lock should be surrounded */
+static int fill_gids(struct gids_elem* gelem, int *gids)
+{
+    int size, i, sbx_idx, j, gid, k;
+    bool is_redundant;
+    input_size = input_size / sizeof(int);
+    size = 0;
+    for (i = 0; i < input_size; ++i) {
+        sbx_idx = ((int*)global_buffer)[i];
+        if (sbx_idx >= gelem->sbx_size)
+            continue;
+        for (j = 0; j < gelem->gids_size[sbx_idx]; ++j) {
+            gid = gelem->sbx_gids[sbx_idx][j];
+            is_redundant = false;
+            for (k = 0; k < size; ++k)
+                if (gids[k] == gid) {
+                    is_redundant = true;
+                    break;
+                }
+            if (!is_redundant && size < 100)
+                gids[size++] = gid;
+        }
+    }
+    return size;
+}
 
 int request_inspect_gids(int *gids)
 {
     int cur_uid;
     int cur_pid = current_pid();
     struct channel_node* cnode;
+    struct gids_elem* gelem;
+    int size;
 
     /* do it only after initialization */
     if (pm_pid == 0) return 0;
@@ -646,6 +695,11 @@ int request_inspect_gids(int *gids)
      */
     if (in_atomic() || in_interrupt()) return 0;
 
+    /* do gids inspection for only necessary threads */
+    cur_uid = current_uid();
+    gelem = search_gids(cur_uid);
+    if (!gelem) return 0;
+
     /* Prevent recursive remote stack inspection.
      * For example, remote stack inspector calls syscall.
      */
@@ -656,17 +710,16 @@ int request_inspect_gids(int *gids)
     if (!cnode) return 0; /* don't have sandbox */
     if (cnode->value_task == current) return 0;
 
-    cur_uid = current_uid();
-
-    /* do gids inspection for only necessary threads */
-
     if (!start_inspection(cur_pid, current_tid())) return 0;
 
     wait_event_interruptible(wq, !in_stack_inspection);
 
     /* do gids inspection using stack trace */
     mutex_lock(&channel_lock);
+    size = -1;
     if (wakeup_tsk) {
+        printk("[CHANNEL] request_inspect_gids pid=%d uid=%d\n", cur_pid, cur_uid);
+        size = fill_gids(gelem, gids);
     }
     mutex_unlock(&channel_lock);
 
@@ -680,7 +733,7 @@ int request_inspect_gids(int *gids)
     // allow the next pm to inspect stack trace
     mutex_unlock(&pm_lock);
 
-    return -1;
+    return size;
 }
 
 device_initcall( channel_init );
