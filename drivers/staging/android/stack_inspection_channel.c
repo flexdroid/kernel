@@ -646,47 +646,39 @@ int __init channel_init( void )
 }
 
 /* lock should be surrounded */
-static int fill_gids(struct gids_elem* gelem, int *gids)
+static int gids_inspection(struct gids_elem* gelem, int gid)
 {
-    int size, i, sbx_idx, j, gid, k;
-    bool is_redundant;
+    int i, sbx_idx, j;
     input_size = input_size / sizeof(int);
-    size = 0;
     for (i = 0; i < input_size; ++i) {
         sbx_idx = ((int*)global_buffer)[i];
         if (sbx_idx >= gelem->sbx_size)
             continue;
         for (j = 0; j < gelem->gids_size[sbx_idx]; ++j) {
-            gid = gelem->sbx_gids[sbx_idx][j];
-            is_redundant = false;
-            for (k = 0; k < size; ++k)
-                if (gids[k] == gid) {
-                    is_redundant = true;
-                    break;
-                }
-            if (!is_redundant && size < 100)
-                gids[size++] = gid;
+            if (gid == gelem->sbx_gids[sbx_idx][j])
+                return 1;
         }
     }
-    return size;
+    return -1;
 }
 
-int request_inspect_gids(int *gids)
+/* returns 0 if gids inspection is not available (skip)
+ * returns -1 if current proc does not have GID (reject)
+ * returns 1 if current proc has GID (allow)
+ */
+int request_inspect_gids(int gid)
 {
     int cur_uid;
     int cur_pid = current_pid();
     struct channel_node* cnode;
     struct gids_elem* gelem;
-    int size;
+    int ret;
 
     /* do it only after initialization */
     if (pm_pid == 0) return 0;
 
     /* Skip PM */
     if (pm_pid == cur_pid) return 0;
-
-    /* memory leack check */
-    if (gids == NULL) return 0;
 
     /* Skip non-system call like interrupt
      * to prevent deadlock.
@@ -716,10 +708,10 @@ int request_inspect_gids(int *gids)
 
     /* do gids inspection using stack trace */
     mutex_lock(&channel_lock);
-    size = -1;
+    ret = -1;
     if (wakeup_tsk) {
         printk("[CHANNEL] request_inspect_gids pid=%d uid=%d\n", cur_pid, cur_uid);
-        size = fill_gids(gelem, gids);
+        ret = gids_inspection(gelem, gid);
     }
     mutex_unlock(&channel_lock);
 
@@ -733,7 +725,7 @@ int request_inspect_gids(int *gids)
     // allow the next pm to inspect stack trace
     mutex_unlock(&pm_lock);
 
-    return size;
+    return ret;
 }
 
 device_initcall( channel_init );

@@ -1,6 +1,6 @@
 #ifndef _LINUX_STACK_INSPECTION_CHANNEL_H
 #define _LINUX_STACK_INSPECTION_CHANNEL_H
 
-int request_inspect_gids(int *);
+int request_inspect_gids(int);
 
 #endif /* _LINUX_STACK_INSPECTION_CHANNEL_H */

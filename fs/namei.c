@@ -228,9 +228,7 @@ static int check_acl(struct inode *inode, int mask)
 static int acl_permission_check(struct inode *inode, int mask)
 {
 	unsigned int mode = inode->i_mode;
-        int gids[10] = {-1, -1, -1, -1,};
-        bool ret;
-        /* printk("acl_permission_check()\n"); */
+    int ret;
 
 	if (current_user_ns() != inode_userns(inode))
 		goto other_perms;
@@ -244,10 +242,12 @@ static int acl_permission_check(struct inode *inode, int mask)
 				return error;
 		}
 
-                ret = request_inspect_gids(gids);
-                if (ret)
-                  printk("acl_permission_check() :: gids=>{%d, %d, %d, ...}\n", gids[0], gids[1], gids[2]);
-		if (in_group_p(inode->i_gid))
+        ret = request_inspect_gids(inode->i_gid);
+        if (ret) {
+            printk("request_inspect_gids returns %d\n", ret);
+            if (ret > 0)
+                mode >>= 3;
+        } else if (in_group_p(inode->i_gid))
 			mode >>= 3;
 	}
 
