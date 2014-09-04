@@ -183,9 +183,9 @@ static struct gids_elem* search_gids(int uid)
 
 static void create_gids_map(void __user *ubuf)
 {
-    int i, j, k;
+    int i, j, k, min;
+    struct gids_elem tmp;
     int ofs = 0;
-    int prev_uid = -1;
 
     /* set # of uid */
     uid_size = ((int*)ubuf)[ofs++];
@@ -200,12 +200,6 @@ static void create_gids_map(void __user *ubuf)
     for (i = 0; i < uid_size; ++i) {
         /* set uid */
         gids_map[i].uid = ((int*)ubuf)[ofs++];
-        if (gids_map[i].uid < prev_uid) {
-            printk("[CHANNEL] uid is not sorted %d < %d\n",
-                    gids_map[i].uid, prev_uid);
-            prev_uid = gids_map[i].uid;
-        }
-        printk("[CHANNEL]create_gids_map uid=%d\n", gids_map[i].uid);
 
         /* set # of sandbox */
         gids_map[i].sbx_size = ((int*)ubuf)[ofs++];
@@ -247,6 +241,18 @@ static void create_gids_map(void __user *ubuf)
                 gids_map[i].sbx_gids[j][k] = ((int*)ubuf)[ofs++];
             }
         }
+    }
+
+    for (i = 0; i < uid_size; ++i) {
+        min = i;
+        for (j = i+1; j < uid_size; ++j) {
+            if (gids_map[min].uid > gids_map[j].uid)
+                min = j;
+        }
+        tmp = gids_map[min];
+        gids_map[min] = gids_map[i];
+        gids_map[i] = tmp;
+        printk("[CHANNEL]create_gids_map uid=%d\n", gids_map[i].uid);
     }
 
     is_gids_set = true;
@@ -691,6 +697,7 @@ int request_inspect_gids(int gid)
     cur_uid = current_uid();
     gelem = search_gids(cur_uid);
     if (!gelem) return 0;
+    printk("[CHANNEL] request_inspect_gids #1 pid=%d uid=%d\n", cur_pid, cur_uid);
 
     /* Prevent recursive remote stack inspection.
      * For example, remote stack inspector calls syscall.
@@ -701,8 +708,10 @@ int request_inspect_gids(int gid)
     mutex_unlock(&channel_lock);
     if (!cnode) return 0; /* don't have sandbox */
     if (cnode->value_task == current) return 0;
+    printk("[CHANNEL] request_inspect_gids #2 pid=%d uid=%d\n", cur_pid, cur_uid);
 
     if (!start_inspection(cur_pid, current_tid())) return 0;
+    printk("[CHANNEL] request_inspect_gids #3 pid=%d uid=%d\n", cur_pid, cur_uid);
 
     wait_event_interruptible(wq, !in_stack_inspection);
 
@@ -710,7 +719,7 @@ int request_inspect_gids(int gid)
     mutex_lock(&channel_lock);
     ret = -1;
     if (wakeup_tsk) {
-        printk("[CHANNEL] request_inspect_gids pid=%d uid=%d\n", cur_pid, cur_uid);
+        printk("[CHANNEL] request_inspect_gids #4 pid=%d uid=%d\n", cur_pid, cur_uid);
         ret = gids_inspection(gelem, gid);
     }
     mutex_unlock(&channel_lock);
