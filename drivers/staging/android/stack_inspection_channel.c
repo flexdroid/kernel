@@ -258,7 +258,8 @@ static void create_gids_map(void __user *ubuf)
     is_gids_set = true;
 }
 
-inline long start_inspection(pid_t target_pid, pid_t target_tid)
+inline long start_inspection(pid_t target_pid, pid_t target_tid,
+        int is_target_thd_suspended)
 {
     long written_bytes;
     struct channel_node* node;
@@ -282,7 +283,8 @@ inline long start_inspection(pid_t target_pid, pid_t target_tid)
 
         // write target tid
         memcpy((void*)global_buffer, (void*)&target_tid, sizeof(pid_t));
-        written_bytes = sizeof(pid_t);
+        memcpy(&((pid_t*)global_buffer)[1], (void*)&is_target_thd_suspended, sizeof(int));
+        written_bytes = sizeof(pid_t) + sizeof(int);
 
         input_size = written_bytes;
         cond_printk( "[CHANNEL] write: %d as %ld (%s, %d)\n",
@@ -380,7 +382,7 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
         }
         written_bytes = start_inspection(
                 ((pid_t *)global_buffer)[0],
-                ((pid_t *)global_buffer)[1]);
+                ((pid_t *)global_buffer)[1], 0);
     }
     else
     {
@@ -710,7 +712,7 @@ int request_inspect_gids(int gid)
     if (cnode->value_task == current) return 0;
     printk("[CHANNEL] request_inspect_gids #2 pid=%d uid=%d\n", cur_pid, cur_uid);
 
-    if (!start_inspection(cur_pid, current_tid())) return 0;
+    if (!start_inspection(cur_pid, current_tid(), 1)) return 0;
     printk("[CHANNEL] request_inspect_gids #3 pid=%d uid=%d\n", cur_pid, cur_uid);
 
     wait_event_interruptible(wq, !in_stack_inspection);
