@@ -720,7 +720,12 @@ int request_inspect_gids(int gid)
     /* do gids inspection using stack trace */
     mutex_lock(&channel_lock);
     ret = -1;
-    if (wakeup_tsk) {
+    /* If input_size is zero, it has default GIDS.
+     * Thus skip it.
+     */
+    if (!input_size)
+        ret = 0;
+    else if (wakeup_tsk) {
         printk("[CHANNEL] request_inspect_gids #4 pid=%d uid=%d\n", cur_pid, cur_uid);
         ret = gids_inspection(gelem, gid);
     }
