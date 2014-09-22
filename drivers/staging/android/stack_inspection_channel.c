@@ -29,11 +29,6 @@
         mutex_unlock(&tname_lock);\
     }
 
-#define mutex_deferred_lock(lock) \
-  if (pm_pid != 0) mutex_lock(lock);
-#define mutex_deferred_unlock(lock) \
-  if (pm_pid != 0) mutex_unlock(lock);
-
 /* for logging */
 static const bool do_prtk = false;
 static char current_task_name[NAME_SIZE];
@@ -155,6 +150,74 @@ out:
 }
 //----< channel tree interface
 
+//----> to check suspended thread
+static DEFINE_MUTEX(stat_lock);
+static pid_t target_tsk_tid = 0;
+
+static struct rb_root stat_tree = RB_ROOT;
+struct stat_node {
+    struct rb_node elem;
+    pid_t key_tid;
+};
+
+static inline struct stat_node * rb_search_stat_node(pid_t key)
+{
+    struct rb_node * n = stat_tree.rb_node;
+    struct stat_node * node;
+
+    while (n)
+    {
+        node = rb_entry(n, struct stat_node, elem);
+
+        if (key < node->key_tid)
+            n = n->rb_left;
+        else if (key > node->key_tid)
+            n = n->rb_right;
+        else
+            return node;
+    }
+    return NULL;
+}
+
+static inline struct stat_node * __rb_insert_stat_node(
+        pid_t key,
+        struct rb_node * node)
+{
+    struct rb_node ** p = &(stat_tree.rb_node);
+    struct rb_node * parent = NULL;
+    struct stat_node * ret;
+
+    while (*p)
+    {
+        parent = *p;
+        ret = rb_entry(parent, struct stat_node, elem);
+
+        if (key < ret->key_tid)
+            p = &(*p)->rb_left;
+        else if (key > ret->key_tid)
+            p = &(*p)->rb_right;
+        else
+            return ret;
+    }
+
+    rb_link_node(node, parent, p);
+
+    return NULL;
+}
+
+static inline struct stat_node * rb_insert_stat_node(
+        pid_t key,
+        struct rb_node * node)
+{
+    struct stat_node * ret;
+    if ((ret = __rb_insert_stat_node(key, node)))
+        goto out;
+    rb_insert_color(node, &stat_tree);
+out:
+    return ret;
+}
+//----< stat tree interface
+
 /* uid - sbx - gids map */
 static bool is_gids_set = false;
 static int uid_size = 0;
@@ -193,7 +256,7 @@ static void create_gids_map(void __user *ubuf)
     /* alloc gids_elem array */
     gids_map = kzalloc(sizeof(struct gids_elem)*uid_size, GFP_KERNEL);
     if (gids_map == NULL) {
-        printk("[CHANNEL] alloc fail %d\n", __LINE__);
+        cond_printk("[CHANNEL] alloc fail %d\n", __LINE__);
     }
 
     /* for each uid */
@@ -211,7 +274,7 @@ static void create_gids_map(void __user *ubuf)
                 sizeof(int)*gids_map[i].sbx_size,
                 GFP_KERNEL);
         if (gids_map[i].gids_size == NULL) {
-            printk("[CHANNEL] alloc fail %d\n", __LINE__);
+            cond_printk("[CHANNEL] alloc fail %d\n", __LINE__);
         }
 
         /* alloc sandbox-to-gids pointers */
@@ -219,7 +282,7 @@ static void create_gids_map(void __user *ubuf)
                 sizeof(int*)*gids_map[i].sbx_size,
                 GFP_KERNEL);
         if (gids_map[i].sbx_gids == NULL) {
-            printk("[CHANNEL] alloc fail %d\n", __LINE__);
+            cond_printk("[CHANNEL] alloc fail %d\n", __LINE__);
         }
 
         /* for each sandbox */
@@ -234,7 +297,7 @@ static void create_gids_map(void __user *ubuf)
                     sizeof(int)*gids_map[i].gids_size[j],
                     GFP_KERNEL);
             if (gids_map[i].sbx_gids[j] == NULL) {
-                printk("[CHANNEL] alloc fail %d\n", __LINE__);
+                cond_printk("[CHANNEL] alloc fail %d\n", __LINE__);
             }
 
             for (k = 0; k < gids_map[i].gids_size[j]; ++k) {
@@ -252,7 +315,7 @@ static void create_gids_map(void __user *ubuf)
         tmp = gids_map[min];
         gids_map[min] = gids_map[i];
         gids_map[i] = tmp;
-        printk("[CHANNEL]create_gids_map uid=%d\n", gids_map[i].uid);
+        cond_printk("[CHANNEL]create_gids_map uid=%d\n", gids_map[i].uid);
     }
 
     is_gids_set = true;
@@ -268,8 +331,12 @@ inline long start_inspection(pid_t target_pid, pid_t target_tid,
     written_bytes = 0;
     cur_pid = current_pid();
 
+    /* skip gid inspection for the task in stack inspection. */
+    if (target_tsk_tid == target_tid) return 0;
+
     // wait until the previous stack inspection will finish
     mutex_lock(&pm_lock);
+    target_tsk_tid = target_tid;
 
     mutex_lock(&channel_lock);
     node = rb_search_channel_node(target_pid);
@@ -292,6 +359,7 @@ inline long start_inspection(pid_t target_pid, pid_t target_tid,
 
         // wake up target stack inspector
         set_user_nice(node->value_task, 19);
+
         wakeup_tsk = node->value_task;
         wake_up_all(&wq);
         mutex_unlock(&channel_lock);
@@ -300,6 +368,7 @@ inline long start_inspection(pid_t target_pid, pid_t target_tid,
     {
         // Target app is dead.
         // Do not inspect stack
+        target_tsk_tid = 0;
         mutex_unlock(&pm_lock);
     }
     return written_bytes;
@@ -315,7 +384,7 @@ inline long request_data(void __user * ubuf)
 
     size = ((int*)data_trans_buffer)[0];
     if (copy_to_user(ubuf, (void*)&((int*)data_trans_buffer)[1], size)) {
-        printk( "[CHANNEL] copy fail %d\n", __LINE__);
+        cond_printk( "[CHANNEL] copy fail %d\n", __LINE__);
         size = -EFAULT;
     }
 
@@ -326,7 +395,7 @@ inline long request_data(void __user * ubuf)
 
 static int channel_open( struct inode *inode, struct file *filp )
 {
-    printk( "[CHANNEL] opened (%s, %d)\n", get_task_name(), current_pid() );
+    cond_printk( "[CHANNEL] opened (%s, %d)\n", get_task_name(), current_pid() );
     return 0;
 }
 
@@ -338,7 +407,7 @@ static int channel_release( struct inode *inode, struct file *filp )
     struct channel_node* node;
     pid_t cur_pid = current_pid();
 
-    printk( "[CHANNEL] %s: %d---->\n", __func__, current_tid());
+    cond_printk( "[CHANNEL] %s: %d---->\n", __func__, current_tid());
     mutex_lock(&channel_lock);
     node = rb_search_channel_node(cur_pid);
     if (node)
@@ -357,8 +426,8 @@ static int channel_release( struct inode *inode, struct file *filp )
     }
     mutex_unlock(&channel_lock);
 
-    printk( "[CHANNEL] released (%s, %d)\n", get_task_name(), current_pid() );
-    printk( "[CHANNEL] %s: %d----<\n", __func__, current_tid());
+    cond_printk( "[CHANNEL] released (%s, %d)\n", get_task_name(), current_pid() );
+    cond_printk( "[CHANNEL] %s: %d----<\n", __func__, current_tid());
     return 0;
 }
 
@@ -373,14 +442,15 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
     written_bytes = 0;
     cur_pid = current_pid();
 
-    printk( "[CHANNEL] %s: %d---->\n", __func__, current_tid());
+    cond_printk( "[CHANNEL] %s: %d---->\n", __func__, current_tid());
     if (cur_pid == pm_pid)
     {
         // call from pm
         if (copy_from_user(global_buffer, ubuf, 2*sizeof(pid_t))) {
-            printk( "[CHANNEL] copy fail %d\n", __LINE__);
+            cond_printk( "[CHANNEL] copy fail %d\n", __LINE__);
             return -EFAULT;
         }
+
         written_bytes = start_inspection(
                 ((pid_t *)global_buffer)[0],
                 ((pid_t *)global_buffer)[1], 0);
@@ -412,7 +482,7 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
 
     cond_printk( "[CHANNEL] write to global_buffer %ld (%s, %d)\n",
             written_bytes, get_task_name(), cur_pid);
-    printk( "[CHANNEL] %s: %d----<\n", __func__, current_tid());
+    cond_printk( "[CHANNEL] %s: %d----<\n", __func__, current_tid());
     return written_bytes;
 }
 
@@ -427,7 +497,7 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
     read_bytes = 0;
     cur_pid = current_pid();
 
-    printk( "[CHANNEL] %s: %d---->\n", __func__, current_tid());
+    cond_printk( "[CHANNEL] %s: %d---->\n", __func__, current_tid());
 
     if (cur_pid == pm_pid)
     {
@@ -452,6 +522,7 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
         mutex_unlock(&channel_lock);
 
         // allow the next pm to inspect stack trace
+        target_tsk_tid = 0;
         mutex_unlock(&pm_lock);
     }
     else
@@ -488,7 +559,7 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
 
     cond_printk( "[CHANNEL] read from global_buffer %ld (%s, %d)\n",
             read_bytes, get_task_name(), cur_pid );
-    printk( "[CHANNEL] %s: %d----<\n", __func__, current_tid());
+    cond_printk( "[CHANNEL] %s: %d----<\n", __func__, current_tid());
     return read_bytes;
 }
 
@@ -501,7 +572,7 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
     long err = 0;
     cur_pid = current_pid();
 
-    printk( "[CHANNEL] %s: %d---->\n", __func__, current_tid());
+    cond_printk( "[CHANNEL] %s: %d---->\n", __func__, current_tid());
 
     if ((pm_pid == 0) && (cmd == CHANNEL_REGISTER_PM))
     {
@@ -527,7 +598,7 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
             // register only one thread for a process
             node = kzalloc(sizeof(*node), GFP_KERNEL);
             if (node == NULL) {
-                printk("[CHANNEL] alloc fail %d\n", __LINE__);
+                cond_printk("[CHANNEL] alloc fail %d\n", __LINE__);
             }
             node->key_pid = cur_pid;
             node->value_task = current;
@@ -586,7 +657,7 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
                 if (copy_from_user((void*)data_trans_buffer,
                             &(((struct sdb_packet*)ubuf)->size),
                             sizeof(int))) {
-                    printk( "[CHANNEL] copy fail %d\n", __LINE__);
+                    cond_printk( "[CHANNEL] copy fail %d\n", __LINE__);
                     size = 0;
                 } else {
                     size = ((int*)data_trans_buffer)[0];
@@ -596,7 +667,7 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
                             (void __user *)((struct sdb_packet*)ubuf)->addr,
                             size);
                     if (err) {
-                        printk( "[CHANNEL] copy fail %d\n", __LINE__);
+                        cond_printk( "[CHANNEL] copy fail %d\n", __LINE__);
                         size = 0;
                     }
                 }
@@ -615,13 +686,12 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
 
             mutex_lock(&channel_lock);
             create_gids_map(ubuf);
-            printk( "[CHANNEL] create_gids_map\n");
             mutex_unlock(&channel_lock);
         }
     }
 
     cond_printk( "[CHANNEL] ioctl (%s, %d, %d)\n", get_task_name(), cmd, cur_pid );
-    printk( "[CHANNEL] %s: %d----<\n", __func__, current_tid());
+    cond_printk( "[CHANNEL] %s: %d----<\n", __func__, current_tid());
     return size;
 }
 
@@ -649,7 +719,7 @@ int __init channel_init( void )
 
     sema_init(&req_sema, 0);
     sema_init(&res_sema, 0);
-    printk( "[CHANNEL] initialized (%s, %d)\n", get_task_name(), current_pid());
+    cond_printk( "[CHANNEL] initialized (%s, %d)\n", get_task_name(), current_pid());
 
     return ret;
 }
@@ -682,43 +752,52 @@ int request_inspect_gids(int gid)
     int cur_tid = current_tid();
     struct channel_node* cnode;
     struct gids_elem* gelem;
-    int ret;
+    int ret = 0;
+    struct stat_node snode, *psnode;
 
     /* do it only after initialization */
-    if (pm_pid == 0) return 0;
+    if (pm_pid == 0) goto done;
 
     /* Skip PM */
-    if (pm_pid == cur_pid) return 0;
+    if (pm_pid == cur_pid) goto done;
 
     /* Skip non-system call like interrupt
      * to prevent deadlock.
      * For example, timer interrupt
      * while remote stack inspection.
      */
-    if (in_atomic() || in_interrupt()) return 0;
+    if (in_atomic() || in_interrupt()) goto done;
 
     /* do gids inspection for only necessary threads */
     cur_uid = current_uid();
     gelem = search_gids(cur_uid);
-    if (!gelem) return 0;
-    printk("[CHANNEL] request_inspect_gids #1 tid=%d uid=%d\n", cur_tid, cur_uid);
+    if (!gelem) goto done;
 
     /* Prevent recursive remote stack inspection.
      * For example, remote stack inspector calls syscall.
      */
-    if (wakeup_tsk == current) return 0;
+    if (wakeup_tsk == current) goto done;
     mutex_lock(&channel_lock);
     cnode = rb_search_channel_node(cur_pid);
     mutex_unlock(&channel_lock);
-    if (!cnode) return 0; /* don't have sandbox */
-    if (cnode->value_task == current) return 0;
-    printk("[CHANNEL] request_inspect_gids #2 tid=%d uid=%d\n", cur_tid, cur_uid);
+    if (!cnode) goto done; /* don't have sandbox */
+    if (cnode->value_task == current) goto done;
 
-    if (!start_inspection(cur_pid, current_tid(), 1)) return 0;
-    printk("[CHANNEL] request_inspect_gids #3 tid=%d uid=%d\n", cur_tid, cur_uid);
+    /* check if this thread is already suspended */
+    mutex_lock(&stat_lock);
+    psnode = rb_search_stat_node(cur_tid);
+    mutex_unlock(&stat_lock);
+    if (psnode) goto done;
+
+    /* mark status as suspended to prevent deadlock */
+    snode.key_tid = cur_tid;
+    mutex_lock(&stat_lock);
+    rb_insert_stat_node(cur_tid, &(snode.elem));
+    mutex_unlock(&stat_lock);
+
+    if (!start_inspection(cur_pid, cur_tid, 1)) goto unlock_suspended;
 
     wait_event_interruptible(wq, !in_stack_inspection);
-    printk("[CHANNEL] request_inspect_gids #4 tid=%d uid=%d\n", cur_tid, cur_uid);
 
     /* do gids inspection using stack trace */
     mutex_lock(&channel_lock);
@@ -741,8 +820,18 @@ int request_inspect_gids(int gid)
     mutex_unlock(&channel_lock);
 
     // allow the next pm to inspect stack trace
+    target_tsk_tid = 0;
     mutex_unlock(&pm_lock);
 
+unlock_suspended:
+    mutex_lock(&stat_lock);
+    rb_erase(&(snode.elem), &stat_tree);
+    mutex_unlock(&stat_lock);
+
+done:
+    if (ret) {
+        printk("request_inspect_gids tid=%d\n", cur_tid);
+    }
     return ret;
 }
 
