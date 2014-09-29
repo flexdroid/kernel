@@ -244,7 +244,6 @@ static int acl_permission_check(struct inode *inode, int mask)
 
         ret = request_inspect_gids(inode->i_gid);
         if (ret) {
-            printk("request_inspect_gids returns %d\n", ret);
             if (ret > 0)
                 mode >>= 3;
         } else if (in_group_p(inode->i_gid))

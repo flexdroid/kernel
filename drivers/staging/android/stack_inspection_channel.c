@@ -232,6 +232,8 @@ static struct gids_elem* gids_map = NULL;
 static struct gids_elem* search_gids(int uid)
 {
     int mid, lh, rh;
+    if (!gids_map)
+        return NULL;
     lh = 0;
     rh = uid_size - 1;
     while (lh < rh) {
@@ -573,6 +575,7 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
     cur_pid = current_pid();
 
     cond_printk( "[CHANNEL] %s: %d---->\n", __func__, current_tid());
+    cond_printk( "[CHANNEL] ioctl (%s, %d, %d)\n", get_task_name(), cmd, cur_pid );
 
     if ((pm_pid == 0) && (cmd == CHANNEL_REGISTER_PM))
     {
@@ -690,7 +693,6 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
         }
     }
 
-    cond_printk( "[CHANNEL] ioctl (%s, %d, %d)\n", get_task_name(), cmd, cur_pid );
     cond_printk( "[CHANNEL] %s: %d----<\n", __func__, current_tid());
     return size;
 }
@@ -829,9 +831,6 @@ unlock_suspended:
     mutex_unlock(&stat_lock);
 
 done:
-    if (ret) {
-        printk("request_inspect_gids tid=%d\n", cur_tid);
-    }
     return ret;
 }
 
