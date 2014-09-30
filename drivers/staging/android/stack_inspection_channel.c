@@ -440,6 +440,7 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
     pid_t cur_pid;
     struct channel_node* node;
     void __user *ubuf = (void __user *)buf;
+    pid_t target_id[2];
 
     written_bytes = 0;
     cur_pid = current_pid();
@@ -448,14 +449,12 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
     if (cur_pid == pm_pid)
     {
         // call from pm
-        if (copy_from_user(global_buffer, ubuf, 2*sizeof(pid_t))) {
+        if (copy_from_user(target_id, ubuf, 2*sizeof(pid_t))) {
             cond_printk( "[CHANNEL] copy fail %d\n", __LINE__);
             return -EFAULT;
         }
 
-        written_bytes = start_inspection(
-                ((pid_t *)global_buffer)[0],
-                ((pid_t *)global_buffer)[1], 0);
+        written_bytes = start_inspection(target_id[0], target_id[1], 0);
     }
     else
     {
@@ -729,9 +728,9 @@ int __init channel_init( void )
 /* lock should be surrounded */
 static int gids_inspection(struct gids_elem* gelem, int gid)
 {
-    int i, sbx_idx, j;
-    input_size = input_size / sizeof(int);
-    for (i = 0; i < input_size; ++i) {
+    int i, sbx_idx, j, size;
+    size = input_size / sizeof(int);
+    for (i = 0; i < size; ++i) {
         sbx_idx = ((int*)global_buffer)[i];
         if (sbx_idx >= gelem->sbx_size)
             continue;
