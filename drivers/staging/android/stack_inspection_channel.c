@@ -736,7 +736,15 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
     {
         if (cur_pid == pm_pid)
         {
-            count_uid = arg;
+            ubuf = (void __user *)arg;
+            if (ubuf)
+            {
+                if (copy_from_user(&count_uid, ubuf, sizeof(int)))
+                {
+                    printk("copy fail in setuid\n");
+                }
+            }
+            count_res_access = 0;
         }
     }
 
