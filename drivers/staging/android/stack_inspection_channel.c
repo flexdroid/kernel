@@ -51,6 +51,15 @@ static int req_uid = 0;
 static void *data_trans_buffer  = NULL;
 static DEFINE_MUTEX(data_lock);
 
+/* measure stack inspection time */
+static int num_insp[2] = {0};
+static struct timeval time_insp[2];
+static struct timeval start = {0};
+enum {
+    ANDRO_RES,
+    NATIVE_RES,
+};
+
 enum {
     CHANNEL_REGISTER_PM = 0,
     CHANNEL_REGISTER_INSPECTOR,
@@ -323,6 +332,30 @@ static void create_gids_map(void __user *ubuf)
     is_gids_set = true;
 }
 
+inline void time_stamp_end(unsigned int res)
+{
+    struct timeval now;
+    struct timeval diff;
+    do_gettimeofday(&now);
+    if (now.tv_usec < start.tv_usec) {
+        diff.tv_usec = 1000000L + now.tv_usec - start.tv_usec;
+        diff.tv_sec = now.tv_sec - start.tv_sec - 1L;
+    } else {
+        diff.tv_usec = now.tv_usec - start.tv_usec;
+        diff.tv_sec = now.tv_sec - start.tv_sec;
+    }
+    time_insp[res].tv_sec += diff.tv_sec;
+    time_insp[res].tv_usec += diff.tv_usec;
+    ++num_insp[res];
+    if (num_insp[res] == 1000) {
+        printk("%s: %lu.%lu\n", res==ANDRO_RES?"ANDRO_RES":"NATIVE_RES",
+            time_insp[res].tv_sec/1000L, time_insp[res].tv_usec/1000L);
+        num_insp[res] = 0;
+        time_insp[res].tv_sec = 0;
+        time_insp[res].tv_usec = 0;
+    }
+}
+
 inline long start_inspection(pid_t target_pid, pid_t target_tid,
         int is_target_thd_suspended)
 {
@@ -338,6 +371,7 @@ inline long start_inspection(pid_t target_pid, pid_t target_tid,
 
     // wait until the previous stack inspection will finish
     mutex_lock(&pm_lock);
+    do_gettimeofday(&start);
     target_tsk_tid = target_tid;
 
     mutex_lock(&channel_lock);
@@ -371,6 +405,7 @@ inline long start_inspection(pid_t target_pid, pid_t target_tid,
         // Target app is dead.
         // Do not inspect stack
         target_tsk_tid = 0;
+        time_stamp_end(is_target_thd_suspended);
         mutex_unlock(&pm_lock);
     }
     return written_bytes;
@@ -524,6 +559,7 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
 
         // allow the next pm to inspect stack trace
         target_tsk_tid = 0;
+        time_stamp_end(ANDRO_RES);
         mutex_unlock(&pm_lock);
     }
     else
@@ -720,6 +756,7 @@ int __init channel_init( void )
 
     sema_init(&req_sema, 0);
     sema_init(&res_sema, 0);
+    memset(time_insp, 0, 2*sizeof(struct timeval));
     cond_printk( "[CHANNEL] initialized (%s, %d)\n", get_task_name(), current_pid());
 
     return ret;
@@ -822,6 +859,7 @@ int request_inspect_gids(int gid)
 
     // allow the next pm to inspect stack trace
     target_tsk_tid = 0;
+    time_stamp_end(NATIVE_RES);
     mutex_unlock(&pm_lock);
 
 unlock_suspended:
