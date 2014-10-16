@@ -59,6 +59,8 @@ enum {
     ANDRO_RES,
     NATIVE_RES,
 };
+static int count_uid = 0;
+static int count_res_access = 0;
 
 enum {
     CHANNEL_REGISTER_PM = 0,
@@ -68,6 +70,8 @@ enum {
     CHANNEL_REQUEST_PM,
     CHANNEL_PM_RESPONSE,
     CHANNEL_REGISTER_GIDS,
+    CHANNEL_COUNT_SETUID,
+    CHANNEL_COUNT_LOG,
 };
 
 struct sdb_packet {
@@ -728,6 +732,23 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
         }
     }
 
+    if (cmd == CHANNEL_COUNT_SETUID)
+    {
+        if (cur_pid == pm_pid)
+        {
+            count_uid = arg;
+        }
+    }
+
+    if (cmd == CHANNEL_COUNT_LOG)
+    {
+        if (cur_pid == pm_pid)
+        {
+            printk("NATIVE_COUNT (%d): %d\n", count_uid, count_res_access);
+            count_res_access = 0;
+        }
+    }
+
     cond_printk( "[CHANNEL] %s: %d----<\n", __func__, current_tid());
     return size;
 }
@@ -808,6 +829,7 @@ int request_inspect_gids(int gid)
 
     /* do gids inspection for only necessary threads */
     cur_uid = current_uid();
+    if (count_uid == cur_uid) ++count_res_access;
     gelem = search_gids(cur_uid);
     if (!gelem) goto done;
 
