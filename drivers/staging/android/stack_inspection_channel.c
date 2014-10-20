@@ -59,7 +59,7 @@ enum {
     ANDRO_RES,
     NATIVE_RES,
 };
-static int count_uid = 0;
+static int count_tid = -1;
 static int count_res_access = 0;
 
 enum {
@@ -351,6 +351,7 @@ inline void time_stamp_end(unsigned int res)
     time_insp[res].tv_sec += diff.tv_sec;
     time_insp[res].tv_usec += diff.tv_usec;
     ++num_insp[res];
+    /*
     if (num_insp[res] == 1000) {
         printk("%s: %lu.%lu\n", res==ANDRO_RES?"ANDRO_RES":"NATIVE_RES",
             time_insp[res].tv_sec/1000L, time_insp[res].tv_usec/1000L);
@@ -358,6 +359,7 @@ inline void time_stamp_end(unsigned int res)
         time_insp[res].tv_sec = 0;
         time_insp[res].tv_usec = 0;
     }
+    */
 }
 
 inline long start_inspection(pid_t target_pid, pid_t target_tid,
@@ -739,7 +741,7 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
             ubuf = (void __user *)arg;
             if (ubuf)
             {
-                if (copy_from_user(&count_uid, ubuf, sizeof(int)))
+                if (copy_from_user(&count_tid, ubuf, sizeof(int)))
                 {
                     printk("copy fail in setuid\n");
                 }
@@ -752,7 +754,7 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
     {
         if (cur_pid == pm_pid)
         {
-            printk("NATIVE_COUNT (%d): %d\n", count_uid, count_res_access);
+            printk("NATIVE_COUNT (%d): %d\n", count_tid, count_res_access);
             count_res_access = 0;
         }
     }
@@ -837,7 +839,7 @@ int request_inspect_gids(int gid)
 
     /* do gids inspection for only necessary threads */
     cur_uid = current_uid();
-    if (count_uid == cur_uid) ++count_res_access;
+    if (count_tid == cur_tid) ++count_res_access;
     gelem = search_gids(cur_uid);
     if (!gelem) goto done;
 
