@@ -52,6 +52,7 @@ static void *data_trans_buffer  = NULL;
 static DEFINE_MUTEX(data_lock);
 
 /* measure stack inspection time */
+#define PERIODIC_LOG 0
 static int num_insp[2] = {0};
 static struct timeval time_insp[2];
 static struct timeval start = {0};
@@ -59,8 +60,9 @@ enum {
     ANDRO_RES,
     NATIVE_RES,
 };
+
+/* count thread resource access */
 static int count_tid = -1;
-static int count_res_access = 0;
 
 enum {
     CHANNEL_REGISTER_PM = 0,
@@ -340,6 +342,10 @@ inline void time_stamp_end(unsigned int res)
 {
     struct timeval now;
     struct timeval diff;
+#if !(PERIODIC_LOG)
+    if (count_tid != current_tid())
+        return;
+#endif
     do_gettimeofday(&now);
     if (now.tv_usec < start.tv_usec) {
         diff.tv_usec = 1000000L + now.tv_usec - start.tv_usec;
@@ -351,15 +357,16 @@ inline void time_stamp_end(unsigned int res)
     time_insp[res].tv_sec += diff.tv_sec;
     time_insp[res].tv_usec += diff.tv_usec;
     ++num_insp[res];
-    /*
+
+#if PERIODIC_LOG
     if (num_insp[res] == 1000) {
         printk("%s: %lu.%lu\n", res==ANDRO_RES?"ANDRO_RES":"NATIVE_RES",
-            time_insp[res].tv_sec/1000L, time_insp[res].tv_usec/1000L);
+                time_insp[res].tv_sec/1000L, time_insp[res].tv_usec/1000L);
         num_insp[res] = 0;
         time_insp[res].tv_sec = 0;
         time_insp[res].tv_usec = 0;
     }
-    */
+#endif
 }
 
 inline long start_inspection(pid_t target_pid, pid_t target_tid,
@@ -734,6 +741,12 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
         }
     }
 
+#if PERIODIC_LOG
+    if (cmd == CHANNEL_COUNT_SETUID || cmd == CHANNEL_COUNT_LOG)
+    {
+        printk("count_tid log is turned off\n");
+    }
+#else
     if (cmd == CHANNEL_COUNT_SETUID)
     {
         if (cur_pid == pm_pid)
@@ -746,7 +759,6 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
                     printk("copy fail in setuid\n");
                 }
             }
-            count_res_access = 0;
         }
     }
 
@@ -754,10 +766,21 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
     {
         if (cur_pid == pm_pid)
         {
-            printk("NATIVE_COUNT (%d): %d\n", count_tid, count_res_access);
-            count_res_access = 0;
+            printk("ANDRO_RES (%d): %lu sec %lu usec for %d\n", count_tid,
+                    time_insp[ANDRO_RES].tv_sec, time_insp[ANDRO_RES].tv_usec,
+                    num_insp[ANDRO_RES]);
+            num_insp[ANDRO_RES] = 0;
+            time_insp[ANDRO_RES].tv_sec = 0;
+            time_insp[ANDRO_RES].tv_usec = 0;
+            printk("NATIVE_RES (%d): %lu sec %lu usec for %d\n", count_tid,
+                    time_insp[NATIVE_RES].tv_sec, time_insp[NATIVE_RES].tv_usec,
+                    num_insp[NATIVE_RES]);
+            num_insp[NATIVE_RES] = 0;
+            time_insp[NATIVE_RES].tv_sec = 0;
+            time_insp[NATIVE_RES].tv_usec = 0;
         }
     }
+#endif
 
     cond_printk( "[CHANNEL] %s: %d----<\n", __func__, current_tid());
     return size;
@@ -839,7 +862,6 @@ int request_inspect_gids(int gid)
 
     /* do gids inspection for only necessary threads */
     cur_uid = current_uid();
-    if (count_tid == cur_tid) ++count_res_access;
     gelem = search_gids(cur_uid);
     if (!gelem) goto done;
 
