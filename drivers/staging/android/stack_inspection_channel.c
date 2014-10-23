@@ -72,7 +72,7 @@ enum {
     CHANNEL_REQUEST_PM,
     CHANNEL_PM_RESPONSE,
     CHANNEL_REGISTER_GIDS,
-    CHANNEL_COUNT_SETUID,
+    CHANNEL_COUNT_SETTID,
     CHANNEL_COUNT_LOG,
 };
 
@@ -742,12 +742,12 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
     }
 
 #if PERIODIC_LOG
-    if (cmd == CHANNEL_COUNT_SETUID || cmd == CHANNEL_COUNT_LOG)
+    if (cmd == CHANNEL_COUNT_SETTID || cmd == CHANNEL_COUNT_LOG)
     {
         printk("count_tid log is turned off\n");
     }
 #else
-    if (cmd == CHANNEL_COUNT_SETUID)
+    if (cmd == CHANNEL_COUNT_SETTID)
     {
         if (cur_pid == pm_pid)
         {
