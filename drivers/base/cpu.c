@@ -57,6 +57,8 @@ static ssize_t __ref store_online(struct device *dev,
 		ret = -EINVAL;
 	}
 	cpu_hotplug_driver_unlock();
+    printk("jaebaek: cpu%d called buf[0]=%c %d\n", cpu->dev.id, buf[0], ret);
+    printk("jaebaek: %d called it\n", task_tgid_vnr(current));
 
 	if (ret >= 0)
 		ret = count;
