@@ -37,6 +37,7 @@
 
 #include "internal.h"
 #include "mount.h"
+#include "../drivers/staging/android/stack_inspection_channel.h"
 
 /* [Feb-1997 T. Schoebel-Theuer]
  * Fundamental changes in the pathname lookup mechanisms (namei)
@@ -219,15 +220,6 @@ static int check_acl(struct inode *inode, int mask)
 #endif
 
 	return -EAGAIN;
-}
-
-static void print_time(int mode)
-{
-    struct timeval now;
-    if (count_tid != current_tid())
-        return;
-    do_gettimeofday(&now);
-    printk("%d: %lu %lu\n", mode, now.tv_sec, now.tv_usec);
 }
 
 /*
