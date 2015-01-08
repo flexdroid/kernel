@@ -221,6 +221,15 @@ static int check_acl(struct inode *inode, int mask)
 	return -EAGAIN;
 }
 
+static void print_time(int mode)
+{
+    struct timeval now;
+    if (count_tid != current_tid())
+        return;
+    do_gettimeofday(&now);
+    printk("%d: %lu %lu\n", mode, now.tv_sec, now.tv_usec);
+}
+
 /*
  * This does the basic permission checking
  */
@@ -240,8 +249,10 @@ static int acl_permission_check(struct inode *inode, int mask)
 				return error;
 		}
 
+        print_time(0);
 		if (in_group_p(inode->i_gid))
 			mode >>= 3;
+        print_time(1);
 	}
 
 other_perms:
