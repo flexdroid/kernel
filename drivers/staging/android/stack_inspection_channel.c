@@ -369,6 +369,15 @@ inline void time_stamp_end(unsigned int res)
 #endif
 }
 
+void print_time(void)
+{
+    struct timeval now;
+    if (count_tid != current_tid())
+        return;
+    do_gettimeofday(&now);
+    printk("print_time: %lu %lu\n", now.tv_sec, now.tv_usec);
+}
+
 inline long start_inspection(pid_t target_pid, pid_t target_tid,
         int is_target_thd_suspended)
 {
@@ -384,7 +393,6 @@ inline long start_inspection(pid_t target_pid, pid_t target_tid,
 
     // wait until the previous stack inspection will finish
     mutex_lock(&pm_lock);
-    do_gettimeofday(&start);
     target_tsk_tid = target_tid;
 
     mutex_lock(&channel_lock);
@@ -418,7 +426,6 @@ inline long start_inspection(pid_t target_pid, pid_t target_tid,
         // Target app is dead.
         // Do not inspect stack
         target_tsk_tid = 0;
-        time_stamp_end(is_target_thd_suspended);
         mutex_unlock(&pm_lock);
     }
     return written_bytes;
@@ -572,7 +579,6 @@ static ssize_t channel_read( struct file *filp, char *buf, size_t count, loff_t 
 
         // allow the next pm to inspect stack trace
         target_tsk_tid = 0;
-        time_stamp_end(ANDRO_RES);
         mutex_unlock(&pm_lock);
     }
     else
@@ -766,6 +772,7 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
     {
         if (cur_pid == pm_pid)
         {
+            /*
             printk("ANDRO_RES (%d): %lu sec %lu usec for %d\n", count_tid,
                     time_insp[ANDRO_RES].tv_sec, time_insp[ANDRO_RES].tv_usec,
                     num_insp[ANDRO_RES]);
@@ -778,6 +785,7 @@ static long channel_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
             num_insp[NATIVE_RES] = 0;
             time_insp[NATIVE_RES].tv_sec = 0;
             time_insp[NATIVE_RES].tv_usec = 0;
+            */
         }
     }
 #endif
@@ -810,7 +818,6 @@ int __init channel_init( void )
 
     sema_init(&req_sema, 0);
     sema_init(&res_sema, 0);
-    memset(time_insp, 0, 2*sizeof(struct timeval));
     cond_printk( "[CHANNEL] initialized (%s, %d)\n", get_task_name(), current_pid());
 
     return ret;
@@ -913,7 +920,6 @@ int request_inspect_gids(int gid)
 
     // allow the next pm to inspect stack trace
     target_tsk_tid = 0;
-    time_stamp_end(NATIVE_RES);
     mutex_unlock(&pm_lock);
 
 unlock_suspended:
