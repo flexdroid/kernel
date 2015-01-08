@@ -369,13 +369,13 @@ inline void time_stamp_end(unsigned int res)
 #endif
 }
 
-void print_time(void)
+void print_time(int mode)
 {
     struct timeval now;
     if (count_tid != current_tid())
         return;
     do_gettimeofday(&now);
-    printk("print_time: %lu %lu\n", now.tv_sec, now.tv_usec);
+    printk("%d: %lu %lu\n", mode, now.tv_sec, now.tv_usec);
 }
 
 inline long start_inspection(pid_t target_pid, pid_t target_tid,
