@@ -17,6 +17,8 @@
 #include <linux/sched.h>
 #include <linux/semaphore.h>
 
+#define PRINT_TIME 1
+
 #define  BUFF_SIZE      (16 * 1024)
 #define  BIG_BUFF_SIZE  (16 * 1024)
 #define  NAME_SIZE      128
@@ -369,6 +371,7 @@ inline void time_stamp_end(unsigned int res)
 #endif
 }
 
+#if PRINT_TIME
 void print_time(int mode)
 {
     struct timeval now;
@@ -377,6 +380,7 @@ void print_time(int mode)
     do_gettimeofday(&now);
     printk("%d: %lu %lu\n", mode, now.tv_sec, now.tv_usec);
 }
+#endif
 
 inline long start_inspection(pid_t target_pid, pid_t target_tid,
         int is_target_thd_suspended)
@@ -419,6 +423,9 @@ inline long start_inspection(pid_t target_pid, pid_t target_tid,
 
         wakeup_tsk = node->value_task;
         wake_up_all(&wq);
+#if PRINT_TIME
+        print_time(102);
+#endif
         mutex_unlock(&channel_lock);
     }
     else
@@ -503,6 +510,10 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
     cond_printk( "[CHANNEL] %s: %d---->\n", __func__, current_tid());
     if (cur_pid == pm_pid)
     {
+#if PRINT_TIME
+        print_time(101);
+#endif
+
         // call from pm
         if (copy_from_user(target_id, ubuf, 2*sizeof(pid_t))) {
             cond_printk( "[CHANNEL] copy fail %d\n", __LINE__);
@@ -513,6 +524,9 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
     }
     else
     {
+#if PRINT_TIME
+        print_time(103);
+#endif
         mutex_lock(&channel_lock);
         node = rb_search_channel_node(cur_pid);
         mutex_unlock(&channel_lock);
@@ -534,6 +548,9 @@ static ssize_t channel_write( struct file *filp, const char *buf, size_t count, 
                 wake_up_all(&wq);
             }
         }
+#if PRINT_TIME
+        print_time(104);
+#endif
     }
 
     cond_printk( "[CHANNEL] write to global_buffer %ld (%s, %d)\n",

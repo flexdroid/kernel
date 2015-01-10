@@ -242,15 +242,21 @@ static int acl_permission_check(struct inode *inode, int mask)
 				return error;
 		}
 
+#if PRINT_TIME
         print_time(0);
+#endif
         ret = request_inspect_gids(inode->i_gid);
+#if PRINT_TIME
         print_time(1);
+#endif
         if (ret) {
             if (ret > 0)
                 mode >>= 3;
         } else if (in_group_p(inode->i_gid))
 			mode >>= 3;
+#if PRINT_TIME
         print_time(2);
+#endif
 	}
 
 other_perms:
