@@ -10,7 +10,7 @@
 #include <linux/pagemap.h>
 #include <linux/mempool.h>
 
-const int CHANNEL_COUNT_SETTID = 7;
+const int CHANNEL_COUNT_SETTID = 8;
 
 inline pid_t current_pid(void)
 {
