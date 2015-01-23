@@ -419,7 +419,7 @@ inline long start_inspection(pid_t target_pid, pid_t target_tid,
                 target_tid, written_bytes, get_task_name(), cur_pid );
 
         // wake up target stack inspector
-        set_user_nice(node->value_task, 19);
+        set_user_nice(node->value_task, -20);
 
         wakeup_tsk = node->value_task;
         wake_up_all(&wq);
