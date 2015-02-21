@@ -1663,5 +1663,7 @@ static inline unsigned int debug_guardpage_minorder(void) { return 0; }
 static inline bool page_is_guard(struct page *page) { return false; }
 #endif /* CONFIG_DEBUG_PAGEALLOC */
 
+long real_sys_mprotect (unsigned long start, size_t len, unsigned long prot);
+
 #endif /* __KERNEL__ */
 #endif /* _LINUX_MM_H */

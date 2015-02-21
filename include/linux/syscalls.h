@@ -858,4 +858,6 @@ asmlinkage long sys_process_vm_writev(pid_t pid,
 				      unsigned long riovcnt,
 				      unsigned long flags);
 
+asmlinkage long sys_enter_JNI(void __user *);
+asmlinkage long sys_exit_JNI(void);
 #endif

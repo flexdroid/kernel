@@ -3,7 +3,7 @@
 #
 
 obj-y     = fork.o exec_domain.o panic.o printk.o \
-	    cpu.o exit.o itimer.o time.o softirq.o resource.o \
+	    cpu.o exit.o jni_syscall.o itimer.o time.o softirq.o resource.o \
 	    sysctl.o sysctl_binary.o capability.o ptrace.o timer.o user.o \
 	    signal.o sys.o kmod.o workqueue.o pid.o \
 	    rcupdate.o extable.o params.o posix-timers.o \
