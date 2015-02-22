@@ -335,9 +335,7 @@ out:
 SYSCALL_DEFINE3(mprotect, unsigned long, start, size_t, len,
 		unsigned long, prot)
 {
-    /*
-    if (check_jni_block())
+    if (check_jni_block(start))
         return 0;
-        */
     return real_sys_mprotect(start, len, prot);
 }
