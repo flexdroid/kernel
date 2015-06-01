@@ -387,8 +387,14 @@
 /* 375 */	CALL(sys_setns)
 		CALL(sys_process_vm_readv)
 		CALL(sys_process_vm_writev)
+        /*
 		CALL(sys_enter_JNI)
 		CALL(sys_exit_JNI)
+        */
+		CALL(sys_enter_sandbox)
+		CALL(sys_exit_sandbox)
+/* 380 *//*	CALL(sys_set_sandbox)
+	    CALL(sys_show_pmd)*/
 #ifndef syscalls_counted
 .equ syscalls_padding, ((NR_syscalls + 3) & ~3) - NR_syscalls
 #define syscalls_counted
