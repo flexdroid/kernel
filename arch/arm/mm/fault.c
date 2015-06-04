@@ -519,6 +519,16 @@ do_bad(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 	return 1;
 }
 
+/*
+ * Domain fault handler.
+ */
+static int
+do_domain_fault(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
+{
+    // printk("domain fault at 0x%08lx\n", addr);
+	return 0;
+}
+
 #if defined(CONFIG_ARCH_MSM_SCORPION) && !defined(CONFIG_MSM_SMP)
 #define __str(x) #x
 #define MRC(x, v1, v2, v4, v5, v6) do {					\

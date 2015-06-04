@@ -21,87 +21,33 @@
 #include <asm/pgtable.h>
 #include <asm/bug.h>
 
-asmlinkage void sys_set_sandbox(unsigned long addr)
+static struct pt_regs init_regs;
+asmlinkage unsigned long sys_jump_in(unsigned long addr, struct pt_regs *regs)
 {
-    unsigned long pfn;
-    // pte_t *pte;
-    pgd_t *pgd;
-    pud_t *pud;
-    pmd_t *pmd;
-
-    printk("pid = %d, tid = %d\n", task_tgid_vnr(current), task_pid_vnr(current));
-
-	pgd = pgd_offset(current->mm, addr-SECTION_SIZE);
-	pud = pud_offset(pgd, addr-SECTION_SIZE);
-	pmd = pmd_offset(pud, addr-SECTION_SIZE);
-	if ((addr-SECTION_SIZE) & SECTION_SIZE)
-        pmd++;
-	printk("[0x%lx] *pgd=%08llx\n", addr-SECTION_SIZE, (long long)pmd_val(*pmd));
-
-	pgd = pgd_offset(current->mm, addr);
-	pud = pud_offset(pgd, addr);
-	pmd = pmd_offset(pud, addr);
-	if (addr & SECTION_SIZE)
-        pmd++;
-	printk("[0x%lx] *pgd=%08llx\n", addr, (long long)pmd_val(*pmd));
-
-    if (addr % SECTION_SIZE) {
-        printk("[sys_set_sandbox] fail. addr(0x%lx) is not SECTION_SIZE aligned\n", addr);
-        return;
-    }
-
-	pgd = pgd_offset(current->mm, addr);
-	pud = pud_offset(pgd, addr);
-    pmd = pmd_offset(pud, addr);
-	if (addr & SECTION_SIZE)
-        pmd++;
-
-    pfn = page_to_pfn(alloc_pages(GFP_USER, 8));
-    printk("[sys_set_sandbox] 0x%lx\n", pfn);
-    // pte = pte_alloc_map(current->mm, NULL, pmd, addr);
-    // pte = (pte_t*)alloc_pages_exact(SZ_1K, GFP_USER);
-    // printk("[sys_set_sandbox] %p\n", pte);
-
-    // section offset | user r/w permission | domain number | section c & b
-    *pmd = (pfn << 12) | (12 << 8) | (1 << 5) | (14);
-    // *pmd = ((pmd_t)pte & 0xfffffc00) | (1 << 5) | 1;
-	printk("[0x%lx] *pgd=%08llx", addr, (long long)pmd_val(*pmd));
-
-    /*
-    pfn = page_to_pfn(alloc_pages(GFP_USER, 0));
-    *pte = (pfn << 12) | 0xffe;
-    printk(", *pte=%08llx", (long long)pte_val(*pte));
-    */
-	printk("\n");
+    printk("[jump] addr=0x%08lx, pc=0x%08x\n", addr, ((unsigned int*)regs)[15]);
+    memcpy(&init_regs, regs, sizeof(struct pt_regs));
+    // ((unsigned long*)regs)[0] = 1107;
+    ((unsigned long*)regs)[15] = addr;
+    return 1107;
 }
 
-asmlinkage void sys_show_pmd(unsigned long addr)
+asmlinkage void sys_jump_out(struct pt_regs *regs)
 {
-    pgd_t *pgd;
-    pud_t *pud;
-    pmd_t *pmd;
-
-    printk("pid = %d, tid = %d\n", task_tgid_vnr(current), task_pid_vnr(current));
-
-	pgd = pgd_offset(current->mm, addr-SECTION_SIZE);
-	pud = pud_offset(pgd, addr-SECTION_SIZE);
-	pmd = pmd_offset(pud, addr-SECTION_SIZE);
-	if ((addr-SECTION_SIZE) & SECTION_SIZE)
-        pmd++;
-	printk("[0x%lx] *pgd=%08llx\n", addr-SECTION_SIZE, (long long)pmd_val(*pmd));
-
-	pgd = pgd_offset(current->mm, addr);
-	pud = pud_offset(pgd, addr);
-	pmd = pmd_offset(pud, addr);
-	if (addr & SECTION_SIZE)
-        pmd++;
-	printk("[0x%lx] *pgd=%08llx\n", addr, (long long)pmd_val(*pmd));
+    printk("[jump out] pc=0x%08x\n", ((unsigned int*)regs)[15]);
+    memcpy(regs, &init_regs, sizeof(struct pt_regs));
+    printk("[jump out] pc=0x%08x\n", ((unsigned int*)regs)[15]);
 }
 
 #define DOM_MAX 16
 #define ENTRY_EXIT_GAP 20
 
-static unsigned int domain_entry_pc[DOM_MAX] = {0};
+struct domain_info {
+    pid_t tid;
+    unsigned long addr;
+    struct pt_regs regs;
+};
+
+static struct domain_info di[DOM_MAX] = {{0}};
 
 static void set_domain_client(unsigned int domain, unsigned int type)
 {
@@ -109,7 +55,6 @@ static void set_domain_client(unsigned int domain, unsigned int type)
         struct thread_info *thread = current_thread_info();
         unsigned int dom_ = thread->cpu_domain;
         dom_ &= ~domain_val(domain, DOMAIN_MANAGER);
-        printk("[sandbox] dom_=0x%x\n", dom_);
         thread->cpu_domain = dom_ | domain_val(domain, type);
         do {
             __asm__ __volatile__(
@@ -120,20 +65,24 @@ static void set_domain_client(unsigned int domain, unsigned int type)
     } while (0);
 }
 
-asmlinkage unsigned int sys_enter_sandbox(unsigned long addr)
+asmlinkage unsigned long sys_enter_sandbox(unsigned long addr, struct pt_regs *regs)
 {
     unsigned long dacr = 0;
-    unsigned int pc = (unsigned int)((int*)&dacr)[28];
     pgd_t *pgd;
     pud_t *pud;
     pmd_t *pmd;
     unsigned int sandbox_domain = 3;
 
     for (sandbox_domain = 3; sandbox_domain < DOM_MAX; ++sandbox_domain) {
-        if (!domain_entry_pc[sandbox_domain])
+        if (!di[sandbox_domain].tid)
             break;
     }
-    domain_entry_pc[sandbox_domain] = pc;
+    di[sandbox_domain].tid = task_pid_vnr(current);
+    di[sandbox_domain].addr = addr;
+
+    /* backup register and set jump_to_jni as callee */
+    memcpy(&di[sandbox_domain].regs, regs, sizeof(struct pt_regs));
+    ((unsigned long*)regs)[15] = addr + 15*(1<<12) + (1<<11) + 1;
 
     printk("pid = %d, tid = %d\n", task_tgid_vnr(current), task_pid_vnr(current));
 
@@ -165,37 +114,27 @@ asmlinkage unsigned int sys_enter_sandbox(unsigned long addr)
     /* Write to DACR */
     // modify_domain(sandbox_domain, DOMAIN_MANAGER);
     set_domain_client(sandbox_domain, DOMAIN_CLIENT);
-#ifdef CONFIG_CPU_USE_DOMAINS
-    printk("[sandbox] CONFIG_CPU_USE_DOMAINS is turned on\n");
-#else
-    printk("[sandbox] CONFIG_CPU_USE_DOMAINS is turned off\n");
-#endif
-    /*
-    __asm__ __volatile__(
-            "mcr p15, 0, %[input], c3, c0, 0\n"
-            : : [input] "r" (dacr) );
-            */
-
-    /* Read from DACR */
-    __asm__ __volatile__(
-            "mrc p15, 0, %[result], c3, c0, 0\n"
-            : [result] "=r" (dacr) : );
-	printk("[0x%lx] dacr=0x%lx\n", addr, dacr);
-
-    return sandbox_domain;
+    set_domain_client(DOMAIN_USER, DOMAIN_NOACCESS);
+    return addr;
 }
 
-asmlinkage void sys_exit_sandbox(unsigned long addr, unsigned int domain)
+asmlinkage void sys_exit_sandbox(struct pt_regs *regs)
 {
     unsigned long dacr = 0;
-    unsigned int pc = (unsigned int)((int*)&dacr)[28];
     pgd_t *pgd;
     pud_t *pud;
     pmd_t *pmd;
+    unsigned long addr;
+    unsigned int sandbox_domain = 3;
 
     printk("pid = %d, tid = %d\n", task_tgid_vnr(current), task_pid_vnr(current));
-    printk("gap = %u (0x%x - 0x%x)\n", pc - domain_entry_pc[domain], pc, domain_entry_pc[domain]);
-    domain_entry_pc[domain] = 0;
+    for (sandbox_domain = 3; sandbox_domain < DOM_MAX; ++sandbox_domain) {
+        if (di[sandbox_domain].tid == task_pid_vnr(current))
+            break;
+    }
+    memcpy(regs, &di[sandbox_domain].regs, sizeof(struct pt_regs));
+    di[sandbox_domain].tid = 0;
+    addr = di[sandbox_domain].addr;
 
 	pgd = pgd_offset(current->mm, addr-SECTION_SIZE);
 	pud = pud_offset(pgd, addr-SECTION_SIZE);
@@ -222,21 +161,6 @@ asmlinkage void sys_exit_sandbox(unsigned long addr, unsigned int domain)
 	printk("[0x%lx] dacr=0x%lx\n", addr, dacr);
 
     /* Write to DACR */
-    set_domain_client(domain, DOMAIN_NOACCESS);
-#ifdef CONFIG_CPU_USE_DOMAINS
-    printk("[sandbox] CONFIG_CPU_USE_DOMAINS is turned on\n");
-#else
-    printk("[sandbox] CONFIG_CPU_USE_DOMAINS is turned off\n");
-#endif
-    /*
-    __asm__ __volatile__(
-            "mcr p15, 0, %[input], c3, c0, 0\n"
-            : : [input] "r" (dacr) );
-            */
-
-    /* Read from DACR */
-    __asm__ __volatile__(
-            "mrc p15, 0, %[result], c3, c0, 0\n"
-            : [result] "=r" (dacr) : );
-	printk("[0x%lx] dacr=0x%lx\n", addr, dacr);
+    set_domain_client(DOMAIN_USER, DOMAIN_CLIENT);
+    set_domain_client(sandbox_domain, DOMAIN_NOACCESS);
 }
