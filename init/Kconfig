@@ -790,7 +790,8 @@ endif # CGROUPS
 
 config CHECKPOINT_RESTORE
 	bool "Checkpoint/restore support" if EXPERT
-	default n
+	# default n
+	default y
 	help
 	  Enables additional kernel features in a sake of checkpoint/restore.
 	  In particular it adds auxiliary prctl codes to setup process text,

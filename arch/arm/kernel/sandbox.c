@@ -21,21 +21,34 @@
 #include <asm/pgtable.h>
 #include <asm/bug.h>
 
-static struct pt_regs init_regs;
 asmlinkage unsigned long sys_jump_in(unsigned long addr, struct pt_regs *regs)
 {
+    unsigned int i = 0;
     printk("[jump] addr=0x%08lx, pc=0x%08x\n", addr, ((unsigned int*)regs)[15]);
-    memcpy(&init_regs, regs, sizeof(struct pt_regs));
-    // ((unsigned long*)regs)[0] = 1107;
-    ((unsigned long*)regs)[15] = addr;
-    return 1107;
+    for (i = 0;i < 18;++i)
+        printk("[jump] uregs[%u]=0x%08x\n", i, ((unsigned int*)regs)[i]);
+
+    /* lr = pc */
+    ((unsigned int*)regs)[14] = ((unsigned int*)regs)[15];
+    /* pc = r5 */
+    ((unsigned int*)regs)[15] = ((unsigned int*)regs)[5];
+
+    /* change register */
+    // set_domain_client(DOMAIN_USER, DOMAIN_CLIENT);
+    return ((unsigned long*)regs)[0];
 }
 
-asmlinkage void sys_jump_out(struct pt_regs *regs)
+asmlinkage unsigned long sys_jump_out(struct pt_regs *regs)
 {
-    printk("[jump out] pc=0x%08x\n", ((unsigned int*)regs)[15]);
-    memcpy(regs, &init_regs, sizeof(struct pt_regs));
-    printk("[jump out] pc=0x%08x\n", ((unsigned int*)regs)[15]);
+    printk("[jump out] lr=0x%08x, pc=0x%08x\n", ((unsigned int*)regs)[14],
+            ((unsigned int*)regs)[15]);
+
+    /* pc = lr */
+    ((unsigned int*)regs)[15] = ((unsigned int*)regs)[14];
+
+    /* change register back */
+    // set_domain_client(DOMAIN_USER, DOMAIN_NOACCESS);
+    return ((unsigned long*)regs)[0];
 }
 
 #define DOM_MAX 16
@@ -163,4 +176,15 @@ asmlinkage void sys_exit_sandbox(struct pt_regs *regs)
     /* Write to DACR */
     set_domain_client(DOMAIN_USER, DOMAIN_CLIENT);
     set_domain_client(sandbox_domain, DOMAIN_NOACCESS);
+}
+
+asmlinkage void sys_show_mm(void)
+{
+    struct vm_area_struct *vma;
+    struct mm_struct *mm = current->mm;
+    for (vma = mm->mmap; vma; vma = vma->vm_next) {
+        printk("[vma] vm_start=0x%lx\n", vma->vm_start);
+        printk("[vma] vm_end=0x%lx\n", vma->vm_end);
+        printk("[vma] anon_name=%s\n", vma->shared.anon_name);
+	}
 }

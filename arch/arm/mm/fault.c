@@ -525,7 +525,10 @@ do_bad(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 static int
 do_domain_fault(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 {
-    // printk("domain fault at 0x%08lx\n", addr);
+    /*
+    printk("domain fault at 0x%08lx, fsr=0x%08x\n", addr, fsr);
+    printk("domain fault pc=0x%08lx, sp=0x%08lx\n", regs->uregs[15], regs->uregs[13]);
+    */
 	return 0;
 }
 
