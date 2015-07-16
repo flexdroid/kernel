@@ -77,7 +77,8 @@ struct thread_info {
 	.addr_limit	= KERNEL_DS,					\
 	.cpu_domain	= domain_val(DOMAIN_USER, DOMAIN_MANAGER) |	\
 			  domain_val(DOMAIN_KERNEL, DOMAIN_MANAGER) |	\
-			  domain_val(DOMAIN_IO, DOMAIN_CLIENT),		\
+			  domain_val(DOMAIN_IO, DOMAIN_CLIENT)		|   \
+			  domain_val(DOMAIN_UNTRUSTED, DOMAIN_CLIENT),		\
 	.restart_block	= {						\
 		.fn	= do_no_restart_syscall,			\
 	},								\

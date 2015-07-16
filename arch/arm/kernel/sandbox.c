@@ -20,6 +20,82 @@
 #include <asm/page.h>
 #include <asm/pgtable.h>
 #include <asm/bug.h>
+#include <asm/tlbflush.h>
+
+#include <linux/slab.h>
+
+/*
+ * RBTree for managing registers of each thread
+ */
+
+static DEFINE_MUTEX(reg_lock);
+static struct rb_root reg_tree = RB_ROOT;
+struct reg_node {
+    pid_t tid;                  /* key */
+    struct pt_regs regs;
+    struct rb_node elem;
+};
+
+static inline struct reg_node * rb_search_reg_node(pid_t key)
+{
+    struct rb_node * n = reg_tree.rb_node;
+    struct reg_node * node;
+
+    while (n)
+    {
+        node = rb_entry(n, struct reg_node, elem);
+
+        if (key < node->tid)
+            n = n->rb_left;
+        else if (key > node->tid)
+            n = n->rb_right;
+        else
+            return node;
+    }
+    return NULL;
+}
+
+static inline struct reg_node * __rb_insert_reg_node(
+        pid_t key,
+        struct rb_node * node)
+{
+    struct rb_node ** p = &(reg_tree.rb_node);
+    struct rb_node * parent = NULL;
+    struct reg_node * ret;
+
+    while (*p)
+    {
+        parent = *p;
+        ret = rb_entry(parent, struct reg_node, elem);
+
+        if (key < ret->tid)
+            p = &(*p)->rb_left;
+        else if (key > ret->tid)
+            p = &(*p)->rb_right;
+        else
+            return ret;
+    }
+
+    rb_link_node(node, parent, p);
+
+    return NULL;
+}
+
+static inline struct reg_node * rb_insert_reg_node(
+        pid_t key,
+        struct rb_node * node)
+{
+    struct reg_node * ret;
+    if ((ret = __rb_insert_reg_node(key, node)))
+        goto out;
+    rb_insert_color(node, &reg_tree);
+out:
+    return ret;
+}
+
+/*
+ * system calls
+ */
 
 asmlinkage unsigned long sys_jump_in(unsigned long addr, struct pt_regs *regs)
 {
@@ -53,14 +129,8 @@ asmlinkage unsigned long sys_jump_out(struct pt_regs *regs)
 
 #define DOM_MAX 16
 #define ENTRY_EXIT_GAP 20
-
-struct domain_info {
-    pid_t tid;
-    unsigned long addr;
-    struct pt_regs regs;
-};
-
-static struct domain_info di[DOM_MAX] = {{0}};
+#define UNTRUSTED_SECTIONS 255
+#define LIB_STACK_SIZE (1<<22)
 
 static void set_domain_client(unsigned int domain, unsigned int type)
 {
@@ -81,101 +151,133 @@ static void set_domain_client(unsigned int domain, unsigned int type)
 asmlinkage unsigned long sys_enter_sandbox(unsigned long addr, struct pt_regs *regs)
 {
     unsigned long dacr = 0;
-    pgd_t *pgd;
-    pud_t *pud;
-    pmd_t *pmd;
-    unsigned int sandbox_domain = 3;
+    struct reg_node* rnode = NULL;
+    pid_t tid = task_pid_vnr(current);
+    unsigned int i;
 
-    for (sandbox_domain = 3; sandbox_domain < DOM_MAX; ++sandbox_domain) {
-        if (!di[sandbox_domain].tid)
-            break;
+    for (i = 0; i < 16; i++) {
+        printk("%08lx ", ((unsigned long*)regs)[i]);
+        if (i == 7)
+            printk("\n");
     }
-    di[sandbox_domain].tid = task_pid_vnr(current);
-    di[sandbox_domain].addr = addr;
+    printk("\n");
 
-    /* backup register and set jump_to_jni as callee */
-    memcpy(&di[sandbox_domain].regs, regs, sizeof(struct pt_regs));
-    ((unsigned long*)regs)[15] = addr + 15*(1<<12) + (1<<11) + 1;
+    /* backup thread's state */
+    mutex_lock(&reg_lock);
+    rnode = rb_search_reg_node(tid);
+    if (rnode == NULL) {
+        // register only one thread for a process
+        rnode = kzalloc(sizeof(*rnode), GFP_KERNEL);
+        if (rnode == NULL) {
+            printk("[sandbox] alloc fail %d\n", __LINE__);
+            mutex_unlock(&reg_lock);
+            return 0;
+        }
+        rnode->tid = tid;
+        memcpy(&rnode->regs, regs, sizeof(struct pt_regs));
+        rb_insert_reg_node(tid, &(rnode->elem));
+    } else {
+        printk("[sandbox] tid=%d already exists in reg_tree %d\n", tid, __LINE__);
+        mutex_unlock(&reg_lock);
+        return 0;
+    }
+    mutex_unlock(&reg_lock);
+
+    /* set jump_to_jni as pc and sp */
+    ((unsigned long*)regs)[13] = addr + LIB_STACK_SIZE;
+    ((unsigned long*)regs)[15] = addr + (1<<11) + 1;
 
     printk("pid = %d, tid = %d\n", task_tgid_vnr(current), task_pid_vnr(current));
-
-	pgd = pgd_offset(current->mm, addr-SECTION_SIZE);
-	pud = pud_offset(pgd, addr-SECTION_SIZE);
-	pmd = pmd_offset(pud, addr-SECTION_SIZE);
-	if ((addr-SECTION_SIZE) & SECTION_SIZE)
-        pmd++;
-	printk("[0x%lx] *pgd=%08llx\n", addr-SECTION_SIZE, (long long)pmd_val(*pmd));
-
-	pgd = pgd_offset(current->mm, addr);
-	pud = pud_offset(pgd, addr);
-	pmd = pmd_offset(pud, addr);
-	if (addr & SECTION_SIZE)
-        pmd++;
-	printk("[0x%lx] *pgd=%08llx\n", addr, (long long)pmd_val(*pmd));
-
-    /* Update domain */
-    *pmd = (*pmd & 0xffffff1f) | (sandbox_domain << 5);
-	printk("[0x%lx] *pgd=%08llx\n", addr, (long long)pmd_val(*pmd));
 
     /* Read from DACR */
     __asm__ __volatile__(
             "mrc p15, 0, %[result], c3, c0, 0\n"
             : [result] "=r" (dacr) : );
-	printk("[0x%lx] dacr=0x%lx\n", addr, dacr);
+    printk("[0x%lx] dacr=0x%lx\n", addr, dacr);
 
-    // dacr = 3 << (2*sandbox_domain);
     /* Write to DACR */
-    // modify_domain(sandbox_domain, DOMAIN_MANAGER);
-    set_domain_client(sandbox_domain, DOMAIN_CLIENT);
+    // set_domain_client(DOMAIN_UNTRUSTED, DOMAIN_CLIENT);
     set_domain_client(DOMAIN_USER, DOMAIN_NOACCESS);
+
+    /* Read from DACR */
+    __asm__ __volatile__(
+            "mrc p15, 0, %[result], c3, c0, 0\n"
+            : [result] "=r" (dacr) : );
+    printk("[0x%lx] dacr=0x%lx\n", addr, dacr);
+
     return addr;
 }
 
 asmlinkage void sys_exit_sandbox(struct pt_regs *regs)
 {
     unsigned long dacr = 0;
-    pgd_t *pgd;
-    pud_t *pud;
-    pmd_t *pmd;
-    unsigned long addr;
-    unsigned int sandbox_domain = 3;
+    struct reg_node* rnode = NULL;
+    pid_t tid = task_pid_vnr(current);
+    unsigned int i;
+
+    /* restore thread's state */
+    mutex_lock(&reg_lock);
+    rnode = rb_search_reg_node(tid);
+    if (rnode == NULL) {
+        printk("[sandbox] tid=%d does not exist in reg_tree %d\n", tid, __LINE__);
+        mutex_unlock(&reg_lock);
+        return;
+    } else {
+        memcpy(regs, &rnode->regs, sizeof(struct pt_regs));
+        rb_erase(&(rnode->elem), &reg_tree);
+        kfree(rnode);
+    }
+    mutex_unlock(&reg_lock);
 
     printk("pid = %d, tid = %d\n", task_tgid_vnr(current), task_pid_vnr(current));
-    for (sandbox_domain = 3; sandbox_domain < DOM_MAX; ++sandbox_domain) {
-        if (di[sandbox_domain].tid == task_pid_vnr(current))
-            break;
-    }
-    memcpy(regs, &di[sandbox_domain].regs, sizeof(struct pt_regs));
-    di[sandbox_domain].tid = 0;
-    addr = di[sandbox_domain].addr;
 
-	pgd = pgd_offset(current->mm, addr-SECTION_SIZE);
-	pud = pud_offset(pgd, addr-SECTION_SIZE);
-	pmd = pmd_offset(pud, addr-SECTION_SIZE);
-	if ((addr-SECTION_SIZE) & SECTION_SIZE)
-        pmd++;
-	printk("[0x%lx] *pgd=%08llx\n", addr-SECTION_SIZE, (long long)pmd_val(*pmd));
-
-	pgd = pgd_offset(current->mm, addr);
-	pud = pud_offset(pgd, addr);
-	pmd = pmd_offset(pud, addr);
-	if (addr & SECTION_SIZE)
-        pmd++;
-	printk("[0x%lx] *pgd=%08llx\n", addr, (long long)pmd_val(*pmd));
-
-    /* Restore domain */
-    *pmd = (*pmd & 0xffffff1f) | (1 << 5);
-	printk("[0x%lx] *pgd=%08llx\n", addr, (long long)pmd_val(*pmd));
+    /* Write to DACR */
+    set_domain_client(DOMAIN_USER, DOMAIN_CLIENT);
+    // set_domain_client(DOMAIN_UNTRUSTED, DOMAIN_NOACCESS);
 
     /* Read from DACR */
     __asm__ __volatile__(
             "mrc p15, 0, %[result], c3, c0, 0\n"
             : [result] "=r" (dacr) : );
-	printk("[0x%lx] dacr=0x%lx\n", addr, dacr);
+    printk("dacr=0x%lx\n", dacr);
 
-    /* Write to DACR */
-    set_domain_client(DOMAIN_USER, DOMAIN_CLIENT);
-    set_domain_client(sandbox_domain, DOMAIN_NOACCESS);
+    for (i = 0; i < 16; i++) {
+        printk("%08lx ", ((unsigned long*)regs)[i]);
+        if (i == 7)
+            printk("\n");
+    }
+    printk("\n");
+}
+
+asmlinkage void sys_mark_sandbox(unsigned long addr)
+{
+    struct mm_struct *mm = current->mm;
+    pgd_t *pgd;
+    pud_t *pud;
+    pmd_t *pmd;
+    unsigned int i;
+    unsigned long dacr = 0;
+    /* Read from DACR */
+    __asm__ __volatile__(
+            "mrc p15, 0, %[result], c3, c0, 0\n"
+            : [result] "=r" (dacr) : );
+    printk("dacr=0x%lx\n", dacr);
+
+    printk("[sys_mark_sandbox] addr=0x%lx\n", addr);
+    spin_lock(&mm->page_table_lock);
+    pgd = pgd_offset(mm, addr);
+    pud = pud_offset(pgd, addr);
+    pmd = pmd_offset(pud, addr);
+    if (addr & SECTION_SIZE)
+        pmd++;
+
+    for (i = 0; i < UNTRUSTED_SECTIONS; ++i) {
+        *pmd = (*pmd & 0xfffffe1f) | (DOMAIN_UNTRUSTED << 5);
+        flush_pmd_entry(pmd);
+        pmd++;
+    }
+    spin_unlock(&mm->page_table_lock);
+    printk("[sys_mark_sandbox] addr=0x%lx\n", addr);
 }
 
 asmlinkage void sys_show_mm(void)
@@ -186,5 +288,5 @@ asmlinkage void sys_show_mm(void)
         printk("[vma] vm_start=0x%lx\n", vma->vm_start);
         printk("[vma] vm_end=0x%lx\n", vma->vm_end);
         printk("[vma] anon_name=%s\n", vma->shared.anon_name);
-	}
+    }
 }

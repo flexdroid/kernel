@@ -525,10 +525,35 @@ do_bad(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 static int
 do_domain_fault(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 {
-    /*
+    unsigned long* ptr = (unsigned long*)(regs->uregs[15] - 20);
+    int i = 0;
+    unsigned long dacr = 0;
+    pgd_t *pgd;
+    pud_t *pud;
+    pmd_t *pmd;
+
+    printk("pid = %d, tid = %d\n", task_tgid_vnr(current), task_pid_vnr(current));
     printk("domain fault at 0x%08lx, fsr=0x%08x\n", addr, fsr);
     printk("domain fault pc=0x%08lx, sp=0x%08lx\n", regs->uregs[15], regs->uregs[13]);
-    */
+    for (i = 0;i < 10; ++i) {
+        printk("0x%08lx ", ptr[i]);
+        if (i == 4)
+            printk("\n");
+    }
+    printk("\n");
+
+    pgd = pgd_offset(current->mm, addr);
+    pud = pud_offset(pgd, addr);
+    pmd = pmd_offset(pud, addr);
+    if (addr & SECTION_SIZE)
+        pmd++;
+    printk("[0x%lx] *pmd=%08llx\n", addr, (long long)pmd_val(*pmd));
+
+    /* Read from DACR */
+    __asm__ __volatile__(
+            "mrc p15, 0, %[result], c3, c0, 0\n"
+            : [result] "=r" (dacr) : );
+    printk("dacr=0x%lx\n", dacr);
 	return 0;
 }
 

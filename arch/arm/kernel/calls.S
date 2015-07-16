@@ -395,6 +395,7 @@
 		CALL(sys_exit_sandbox_wrapper)
 /* 380 */	CALL(sys_jump_in_wrapper)
 		CALL(sys_jump_out_wrapper)
+        CALL(sys_mark_sandbox)
         CALL(sys_show_mm)
 #ifndef syscalls_counted
 .equ syscalls_padding, ((NR_syscalls + 3) & ~3) - NR_syscalls

@@ -168,7 +168,7 @@ asmlinkage long sys_enter_JNI(void __user *ubuf)
 
         p2 = ptr;
         while (*((void**)p2)) {
-            real_sys_mprotect(*((unsigned int*)p2), PAGE_SIZE, PROT_READ);
+            //real_sys_mprotect(*((unsigned int*)p2), PAGE_SIZE, PROT_READ);
             ++p2;
         }
     }
@@ -205,7 +205,7 @@ asmlinkage long sys_exit_JNI(void)
             while (*((void**)p)) {
                 pg = (unsigned int)*((void**)p);
                 pg = (pg >> PAGE_SHIFT) << PAGE_SHIFT;
-                real_sys_mprotect(pg, PAGE_SIZE, PROT_READ | PROT_EXEC | PROT_WRITE);
+                // real_sys_mprotect(pg, PAGE_SIZE, PROT_READ | PROT_EXEC | PROT_WRITE);
                 ++p;
             }
 

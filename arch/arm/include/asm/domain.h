@@ -38,11 +38,13 @@
  * invalid fault status and/or tlb corruption (CONFIG_VERIFY_PERMISSION_FAULT).
  */
 #if !defined(CONFIG_IO_36) && !defined(CONFIG_VERIFY_PERMISSION_FAULT)
+#define DOMAIN_UNTRUSTED	8
 #define DOMAIN_KERNEL	0
 #define DOMAIN_TABLE	0
 #define DOMAIN_USER	1
 #define DOMAIN_IO	2
 #else
+#define DOMAIN_UNTRUSTED	8
 #define DOMAIN_KERNEL	2
 #define DOMAIN_TABLE	2
 #define DOMAIN_USER	1

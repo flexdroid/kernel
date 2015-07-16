@@ -232,8 +232,8 @@ fail:
 	return error;
 }
 
-long real_sys_mprotect (unsigned long start, size_t len,
-		unsigned long prot)
+SYSCALL_DEFINE3(mprotect, unsigned long, start, size_t, len,
+		unsigned long, prot)
 {
 	unsigned long vm_flags, nstart, end, tmp, reqprot;
 	struct vm_area_struct *vma, *prev;
@@ -330,12 +330,4 @@ long real_sys_mprotect (unsigned long start, size_t len,
 out:
 	up_write(&current->mm->mmap_sem);
 	return error;
-}
-
-SYSCALL_DEFINE3(mprotect, unsigned long, start, size_t, len,
-		unsigned long, prot)
-{
-    if (check_jni_block(start))
-        return 0;
-    return real_sys_mprotect(start, len, prot);
 }
