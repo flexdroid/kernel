@@ -542,7 +542,7 @@ sys_fork_wrapper:
 ENDPROC(sys_fork_wrapper)
 
 sys_enter_sandbox_wrapper:
-        add	r1, sp, #S_OFF
+        add	r2, sp, #S_OFF
 		b	sys_enter_sandbox
 ENDPROC(sys_enter_sandbox_wrapper)
 
@@ -554,12 +554,12 @@ ENDPROC(sys_exit_sandbox_wrapper)
 sys_jump_in_wrapper:
         add	r1, sp, #S_OFF
 		b	sys_jump_in
-ENDPROC(sys_enter_sandbox_wrapper)
+ENDPROC(sys_jump_in_wrapper)
 
 sys_jump_out_wrapper:
         add	r0, sp, #S_OFF
 		b	sys_jump_out
-ENDPROC(sys_enter_sandbox_wrapper)
+ENDPROC(sys_jump_out_wrapper)
 
 sys_vfork_wrapper:
 		add	r0, sp, #S_OFF

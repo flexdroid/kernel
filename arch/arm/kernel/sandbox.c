@@ -129,7 +129,7 @@ asmlinkage unsigned long sys_jump_out(struct pt_regs *regs)
 
 #define DOM_MAX 16
 #define ENTRY_EXIT_GAP 20
-#define UNTRUSTED_SECTIONS 255
+#define UNTRUSTED_SECTIONS 127
 #define LIB_STACK_SIZE (1<<22)
 
 static void set_domain_client(unsigned int domain, unsigned int type)
@@ -148,7 +148,8 @@ static void set_domain_client(unsigned int domain, unsigned int type)
     } while (0);
 }
 
-asmlinkage unsigned long sys_enter_sandbox(unsigned long addr, struct pt_regs *regs)
+asmlinkage unsigned long sys_enter_sandbox(unsigned long addr,
+        unsigned long stack, struct pt_regs *regs)
 {
     unsigned long dacr = 0;
     struct reg_node* rnode = NULL;
@@ -184,7 +185,8 @@ asmlinkage unsigned long sys_enter_sandbox(unsigned long addr, struct pt_regs *r
     mutex_unlock(&reg_lock);
 
     /* set jump_to_jni as pc and sp */
-    ((unsigned long*)regs)[13] = addr + LIB_STACK_SIZE;
+    ((unsigned long*)regs)[1] = stack;
+    ((unsigned long*)regs)[13] = stack + LIB_STACK_SIZE - sizeof(void*);
     ((unsigned long*)regs)[15] = addr + (1<<11) + 1;
 
     printk("pid = %d, tid = %d\n", task_tgid_vnr(current), task_pid_vnr(current));
