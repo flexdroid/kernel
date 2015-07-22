@@ -726,9 +726,26 @@ static void do_signal(struct pt_regs *regs, int syscall)
 	}
 }
 
+#include <asm/domain.h>
 asmlinkage void
 do_notify_resume(struct pt_regs *regs, unsigned int thread_flags, int syscall)
 {
+    unsigned long dacr_usr;
+    __asm__ __volatile__(
+            "mrc p15, 0, %[result], c3, c0, 0\n"
+            : [result] "=r" (dacr_usr) : );
+    dacr_usr = dacr_usr & domain_val(DOMAIN_USER, 3);
+    if (!dacr_usr) {
+        printk("---->\n");
+        printk("pid = %d, tid = %d\n", task_tgid_vnr(current), task_pid_vnr(current));
+        printk("do_notify_resume thread_flags=0x%08x, syscall=%d\n", thread_flags, syscall);
+        printk("pc=0x%08lx, sp=0x%08lx\n", regs->uregs[15], regs->uregs[13]);
+        printk("dacr=0x%lx\n", dacr_usr);
+        printk("----<\n");
+        modify_domain(DOMAIN_USER, DOMAIN_CLIENT);
+    }
+
+    //---->
 	if (thread_flags & _TIF_SIGPENDING)
 		do_signal(regs, syscall);
 
@@ -738,4 +755,8 @@ do_notify_resume(struct pt_regs *regs, unsigned int thread_flags, int syscall)
 		if (current->replacement_session_keyring)
 			key_replace_session_keyring();
 	}
+    //----<
+
+    if (!dacr_usr)
+        modify_domain(DOMAIN_USER, DOMAIN_NOACCESS);
 }
