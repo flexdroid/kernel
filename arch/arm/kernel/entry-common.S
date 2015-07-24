@@ -552,7 +552,7 @@ sys_exit_sandbox_wrapper:
 ENDPROC(sys_exit_sandbox_wrapper)
 
 sys_jump_in_wrapper:
-        add	r1, sp, #S_OFF
+        add	r0, sp, #S_OFF
 		b	sys_jump_in
 ENDPROC(sys_jump_in_wrapper)
 

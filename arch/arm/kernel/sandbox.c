@@ -97,36 +97,6 @@ out:
  * system calls
  */
 
-asmlinkage unsigned long sys_jump_in(unsigned long addr, struct pt_regs *regs)
-{
-    unsigned int i = 0;
-    printk("[jump] addr=0x%08lx, pc=0x%08x\n", addr, ((unsigned int*)regs)[15]);
-    for (i = 0;i < 18;++i)
-        printk("[jump] uregs[%u]=0x%08x\n", i, ((unsigned int*)regs)[i]);
-
-    /* lr = pc */
-    ((unsigned int*)regs)[14] = ((unsigned int*)regs)[15];
-    /* pc = r5 */
-    ((unsigned int*)regs)[15] = ((unsigned int*)regs)[5];
-
-    /* change register */
-    // set_domain_client(DOMAIN_USER, DOMAIN_CLIENT);
-    return ((unsigned long*)regs)[0];
-}
-
-asmlinkage unsigned long sys_jump_out(struct pt_regs *regs)
-{
-    printk("[jump out] lr=0x%08x, pc=0x%08x\n", ((unsigned int*)regs)[14],
-            ((unsigned int*)regs)[15]);
-
-    /* pc = lr */
-    ((unsigned int*)regs)[15] = ((unsigned int*)regs)[14];
-
-    /* change register back */
-    // set_domain_client(DOMAIN_USER, DOMAIN_NOACCESS);
-    return ((unsigned long*)regs)[0];
-}
-
 #define DOM_MAX 16
 #define ENTRY_EXIT_GAP 20
 #define UNTRUSTED_SECTIONS 127
@@ -146,6 +116,18 @@ static void set_domain_client(unsigned int domain, unsigned int type)
             isb();
         } while (0);
     } while (0);
+}
+
+asmlinkage unsigned long sys_jump_out(struct pt_regs *regs)
+{
+    set_domain_client(DOMAIN_USER, DOMAIN_CLIENT);
+    return ((unsigned long*)regs)[0];
+}
+
+asmlinkage unsigned long sys_jump_in(struct pt_regs *regs)
+{
+    set_domain_client(DOMAIN_USER, DOMAIN_NOACCESS);
+    return ((unsigned long*)regs)[0];
 }
 
 asmlinkage unsigned long sys_enter_sandbox(unsigned long addr,
