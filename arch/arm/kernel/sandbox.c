@@ -168,7 +168,7 @@ asmlinkage unsigned long sys_enter_sandbox(unsigned long addr,
 
     /* set jump_to_jni as pc and sp */
     ((unsigned long*)regs)[1] = stack;
-    ((unsigned long*)regs)[13] = stack + LIB_STACK_SIZE - sizeof(void*);
+    ((unsigned long*)regs)[13] = stack + LIB_STACK_SIZE - PAGE_SIZE;
     ((unsigned long*)regs)[15] = addr + (1<<11) + 1;
 
     printk("pid = %d, tid = %d\n", task_tgid_vnr(current), task_pid_vnr(current));
