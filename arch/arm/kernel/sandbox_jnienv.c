@@ -109,92 +109,54 @@ static void set_domain_client(unsigned int domain, unsigned int type)
     } while (0);
 }
 
-asmlinkage unsigned long sys_jump_out(struct pt_regs *regs)
+/*
+ * Do not use PC (jump addr) as 1st arg here.
+ * It overlaps the real argument (r0).
+ * This function must not have any argument (except regs).
+ */
+asmlinkage void sys_jnienv_enter(struct pt_regs *regs)
 {
-    set_domain_client(DOMAIN_USER, DOMAIN_CLIENT);
-    return ((unsigned long*)regs)[0];
-}
-
-asmlinkage unsigned long sys_jump_in(struct pt_regs *regs)
-{
-    set_domain_client(DOMAIN_USER, DOMAIN_NOACCESS);
-    return ((unsigned long*)regs)[0];
-}
-
-asmlinkage unsigned long sys_enter_sandbox(unsigned long addr,
-        unsigned long stack, struct pt_regs *regs)
-{
-    unsigned long dacr = 0;
     struct reg_node* rnode = NULL;
     pid_t tid = task_pid_vnr(current);
-    unsigned int i;
-
-    for (i = 0; i < 16; i++) {
-        printk("%08lx ", ((unsigned long*)regs)[i]);
-        if (i == 7)
-            printk("\n");
-    }
-    printk("\n");
 
     /* backup thread's state */
     mutex_lock(&reg_lock);
     rnode = rb_search_reg_node(tid);
     if (rnode == NULL) {
-        // register only one thread for a process
         rnode = kzalloc(sizeof(*rnode), GFP_KERNEL);
         if (rnode == NULL) {
-            printk("[sandbox] alloc fail %d\n", __LINE__);
+            printk("[sandbox_jnienv] alloc fail %d\n", __LINE__);
             mutex_unlock(&reg_lock);
-            return 0;
+            return;
         }
         rnode->tid = tid;
         memcpy(&rnode->regs, regs, sizeof(struct pt_regs));
         rb_insert_reg_node(tid, &(rnode->elem));
     } else {
-        printk("[sandbox] tid=%d already exists in reg_tree %d\n", tid, __LINE__);
+        printk("[sandbox_jnienv] tid=%d already exists in reg_tree %d\n", tid, __LINE__);
         mutex_unlock(&reg_lock);
-        return 0;
+        return;
     }
     mutex_unlock(&reg_lock);
 
-    /* set jump_to_jni as pc and sp */
-    ((unsigned long*)regs)[1] = stack;
-    ((unsigned long*)regs)[13] = stack + LIB_STACK_SIZE - PAGE_SIZE;
-    ((unsigned long*)regs)[15] = addr + (1<<11) + 1;
+    /* set PC as jump addr */
+    ((unsigned long*)regs)[15] = ((unsigned long*)regs)[6];
 
-    printk("pid = %d, tid = %d\n", task_tgid_vnr(current), task_pid_vnr(current));
-
-    /* Read from DACR */
-    __asm__ __volatile__(
-            "mrc p15, 0, %[result], c3, c0, 0\n"
-            : [result] "=r" (dacr) : );
-    printk("[0x%lx] dacr=0x%lx\n", addr, dacr);
-
-    /* Write to DACR */
-    // set_domain_client(DOMAIN_UNTRUSTED, DOMAIN_CLIENT);
-    set_domain_client(DOMAIN_USER, DOMAIN_NOACCESS);
-
-    /* Read from DACR */
-    __asm__ __volatile__(
-            "mrc p15, 0, %[result], c3, c0, 0\n"
-            : [result] "=r" (dacr) : );
-    printk("[0x%lx] dacr=0x%lx\n", addr, dacr);
-
-    return addr;
+    /* set domain permission */
+    set_domain_client(DOMAIN_USER, DOMAIN_CLIENT);
 }
 
-asmlinkage void sys_exit_sandbox(struct pt_regs *regs)
+asmlinkage void sys_jnienv_exit(unsigned long ret,
+        struct pt_regs *regs)
 {
-    unsigned long dacr = 0;
     struct reg_node* rnode = NULL;
     pid_t tid = task_pid_vnr(current);
-    unsigned int i;
 
     /* restore thread's state */
     mutex_lock(&reg_lock);
     rnode = rb_search_reg_node(tid);
     if (rnode == NULL) {
-        printk("[sandbox] tid=%d does not exist in reg_tree %d\n", tid, __LINE__);
+        printk("[sandbox_jnienv] tid=%d does not exist in reg_tree %d\n", tid, __LINE__);
         mutex_unlock(&reg_lock);
         return;
     } else {
@@ -204,53 +166,9 @@ asmlinkage void sys_exit_sandbox(struct pt_regs *regs)
     }
     mutex_unlock(&reg_lock);
 
-    printk("pid = %d, tid = %d\n", task_tgid_vnr(current), task_pid_vnr(current));
+    /* save return value to IP reg */
+    ((unsigned long*)regs)[12] = ret;
 
-    /* Write to DACR */
-    set_domain_client(DOMAIN_USER, DOMAIN_CLIENT);
-    // set_domain_client(DOMAIN_UNTRUSTED, DOMAIN_NOACCESS);
-
-    /* Read from DACR */
-    __asm__ __volatile__(
-            "mrc p15, 0, %[result], c3, c0, 0\n"
-            : [result] "=r" (dacr) : );
-    printk("dacr=0x%lx\n", dacr);
-
-    for (i = 0; i < 16; i++) {
-        printk("%08lx ", ((unsigned long*)regs)[i]);
-        if (i == 7)
-            printk("\n");
-    }
-    printk("\n");
-}
-
-asmlinkage void sys_mark_sandbox(unsigned long addr)
-{
-    struct mm_struct *mm = current->mm;
-    pgd_t *pgd;
-    pud_t *pud;
-    pmd_t *pmd;
-    unsigned int i;
-    unsigned long dacr = 0;
-    /* Read from DACR */
-    __asm__ __volatile__(
-            "mrc p15, 0, %[result], c3, c0, 0\n"
-            : [result] "=r" (dacr) : );
-    printk("dacr=0x%lx\n", dacr);
-
-    printk("[sys_mark_sandbox] addr=0x%lx\n", addr);
-    spin_lock(&mm->page_table_lock);
-    pgd = pgd_offset(mm, addr);
-    pud = pud_offset(pgd, addr);
-    pmd = pmd_offset(pud, addr);
-    if (addr & SECTION_SIZE)
-        pmd++;
-
-    for (i = 0; i < UNTRUSTED_SECTIONS; ++i) {
-        *pmd = (*pmd & 0xfffffe1f) | (DOMAIN_UNTRUSTED << 5);
-        flush_pmd_entry(pmd);
-        pmd++;
-    }
-    spin_unlock(&mm->page_table_lock);
-    printk("[sys_mark_sandbox] addr=0x%lx\n", addr);
+    /* set domain permission */
+    set_domain_client(DOMAIN_USER, DOMAIN_NOACCESS);
 }

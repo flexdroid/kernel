@@ -561,6 +561,16 @@ sys_jump_out_wrapper:
 		b	sys_jump_out
 ENDPROC(sys_jump_out_wrapper)
 
+sys_jnienv_enter_wrapper:
+        add	r0, sp, #S_OFF
+		b	sys_jnienv_enter
+ENDPROC(sys_jnienv_enter_wrapper)
+
+sys_jnienv_exit_wrapper:
+        add	r1, sp, #S_OFF
+		b	sys_jnienv_exit
+ENDPROC(sys_jnienv_exit_wrapper)
+
 sys_vfork_wrapper:
 		add	r0, sp, #S_OFF
 		b	sys_vfork
