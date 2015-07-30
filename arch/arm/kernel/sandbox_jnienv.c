@@ -85,6 +85,75 @@ out:
 }
 
 /*
+ * RBTree for managing JNIEnv caller
+ */
+
+static DEFINE_MUTEX(jni_caller_lock);
+static struct rb_root jni_caller_tree = RB_ROOT;
+struct jni_caller_node {
+    pid_t pid;                  /* key */
+    unsigned long jni_caller;
+    struct rb_node elem;
+};
+
+static inline struct jni_caller_node * rb_search_jni_caller_node(pid_t key)
+{
+    struct rb_node * n = jni_caller_tree.rb_node;
+    struct jni_caller_node * node;
+
+    while (n)
+    {
+        node = rb_entry(n, struct jni_caller_node, elem);
+
+        if (key < node->pid)
+            n = n->rb_left;
+        else if (key > node->pid)
+            n = n->rb_right;
+        else
+            return node;
+    }
+    return NULL;
+}
+
+static inline struct jni_caller_node * __rb_insert_jni_caller_node(
+        pid_t key,
+        struct rb_node * node)
+{
+    struct rb_node ** p = &(jni_caller_tree.rb_node);
+    struct rb_node * parent = NULL;
+    struct jni_caller_node * ret;
+
+    while (*p)
+    {
+        parent = *p;
+        ret = rb_entry(parent, struct jni_caller_node, elem);
+
+        if (key < ret->pid)
+            p = &(*p)->rb_left;
+        else if (key > ret->pid)
+            p = &(*p)->rb_right;
+        else
+            return ret;
+    }
+
+    rb_link_node(node, parent, p);
+
+    return NULL;
+}
+
+static inline struct jni_caller_node * rb_insert_jni_caller_node(
+        pid_t key,
+        struct rb_node * node)
+{
+    struct jni_caller_node * ret;
+    if ((ret = __rb_insert_jni_caller_node(key, node)))
+        goto out;
+    rb_insert_color(node, &jni_caller_tree);
+out:
+    return ret;
+}
+
+/*
  * system calls
  */
 
@@ -109,6 +178,30 @@ static void set_domain_client(unsigned int domain, unsigned int type)
     } while (0);
 }
 
+asmlinkage void sys_set_jnicaller(unsigned long addr)
+{
+    struct jni_caller_node* node = NULL;
+    pid_t pid = task_tgid_vnr(current);
+    mutex_lock(&jni_caller_lock);
+    node = rb_search_jni_caller_node(pid);
+    if (node == NULL) {
+        node = kzalloc(sizeof(*node), GFP_KERNEL);
+        if (node == NULL) {
+            printk("[sandbox_jnienv] alloc fail %d\n", __LINE__);
+            mutex_unlock(&jni_caller_lock);
+            return;
+        }
+        node->pid = pid;
+        node->jni_caller = addr;
+        rb_insert_jni_caller_node(pid, &(node->elem));
+    } else {
+        printk("[sandbox_jnienv] pid=%d already exists in jni_caller_tree %d\n", pid, __LINE__);
+        mutex_unlock(&jni_caller_lock);
+        return;
+    }
+    mutex_unlock(&jni_caller_lock);
+}
+
 /*
  * Do not use PC (jump addr) as 1st arg here.
  * It overlaps the real argument (r0).
@@ -117,7 +210,9 @@ static void set_domain_client(unsigned int domain, unsigned int type)
 asmlinkage void sys_jnienv_enter(struct pt_regs *regs)
 {
     struct reg_node* rnode = NULL;
+    struct jni_caller_node* node = NULL;
     pid_t tid = task_pid_vnr(current);
+    pid_t pid = task_tgid_vnr(current);
 
     /* backup thread's state */
     mutex_lock(&reg_lock);
@@ -139,14 +234,31 @@ asmlinkage void sys_jnienv_enter(struct pt_regs *regs)
     }
     mutex_unlock(&reg_lock);
 
-    /* set PC as jump addr */
-    ((unsigned long*)regs)[15] = ((unsigned long*)regs)[6];
+    /*
+     * Find jump address i.e. jni caller.
+     * And set PC as jump addr.
+     */
+    mutex_lock(&jni_caller_lock);
+    node = rb_search_jni_caller_node(pid);
+    if (node == NULL) {
+        printk("[sandbox_jnienv] no jni caller at %d\n", __LINE__);
+    } else {
+        ((unsigned long*)regs)[15] = node->jni_caller;
+    }
+    mutex_unlock(&jni_caller_lock);
+
+    /*
+     * R6 has num.
+     * Pass it.
+     */
+    ((unsigned long*)regs)[0] = ((unsigned long*)regs)[6];
 
     /* set domain permission */
     set_domain_client(DOMAIN_USER, DOMAIN_CLIENT);
 }
 
-asmlinkage void sys_jnienv_exit(unsigned long ret,
+asmlinkage void sys_jnienv_exit(unsigned long r0,
+        unsigned long r1,
         struct pt_regs *regs)
 {
     struct reg_node* rnode = NULL;
@@ -166,8 +278,9 @@ asmlinkage void sys_jnienv_exit(unsigned long ret,
     }
     mutex_unlock(&reg_lock);
 
-    /* save return value to IP reg */
-    ((unsigned long*)regs)[12] = ret;
+    /* save return value to IP, R6 */
+    ((unsigned long*)regs)[12] = r0;
+    ((unsigned long*)regs)[6] = r1;
 
     /* set domain permission */
     set_domain_client(DOMAIN_USER, DOMAIN_NOACCESS);
