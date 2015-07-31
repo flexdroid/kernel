@@ -224,7 +224,7 @@ asmlinkage void sys_exit_sandbox(struct pt_regs *regs)
     printk("\n");
 }
 
-asmlinkage void sys_mark_sandbox(unsigned long addr)
+asmlinkage void sys_mark_sandbox(unsigned long addr, unsigned long sects)
 {
     struct mm_struct *mm = current->mm;
     pgd_t *pgd;
@@ -246,7 +246,7 @@ asmlinkage void sys_mark_sandbox(unsigned long addr)
     if (addr & SECTION_SIZE)
         pmd++;
 
-    for (i = 0; i < UNTRUSTED_SECTIONS; ++i) {
+    for (i = 0; i < sects; ++i) {
         *pmd = (*pmd & 0xfffffe1f) | (DOMAIN_UNTRUSTED << 5);
         flush_pmd_entry(pmd);
         pmd++;
