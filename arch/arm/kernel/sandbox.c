@@ -15,6 +15,8 @@
 
 #include <linux/slab.h>
 
+#define cond_printk(...) ;
+
 /*
  * RBTree for managing registers of each thread
  */
@@ -130,11 +132,11 @@ asmlinkage unsigned long sys_enter_sandbox(unsigned long addr,
     unsigned int i;
 
     for (i = 0; i < 16; i++) {
-        printk("%08lx ", ((unsigned long*)regs)[i]);
+        cond_printk("%08lx ", ((unsigned long*)regs)[i]);
         if (i == 7)
-            printk("\n");
+            cond_printk("\n");
     }
-    printk("\n");
+    cond_printk("\n");
 
     /* backup thread's state */
     mutex_lock(&reg_lock);
@@ -143,7 +145,7 @@ asmlinkage unsigned long sys_enter_sandbox(unsigned long addr,
         // register only one thread for a process
         rnode = kzalloc(sizeof(*rnode), GFP_KERNEL);
         if (rnode == NULL) {
-            printk("[sandbox] alloc fail %d\n", __LINE__);
+            cond_printk("[sandbox] alloc fail %d\n", __LINE__);
             mutex_unlock(&reg_lock);
             return 0;
         }
@@ -151,7 +153,7 @@ asmlinkage unsigned long sys_enter_sandbox(unsigned long addr,
         memcpy(&rnode->regs, regs, sizeof(struct pt_regs));
         rb_insert_reg_node(tid, &(rnode->elem));
     } else {
-        printk("[sandbox] tid=%d already exists in reg_tree %d\n", tid, __LINE__);
+        cond_printk("[sandbox] tid=%d already exists in reg_tree %d\n", tid, __LINE__);
         mutex_unlock(&reg_lock);
         return 0;
     }
@@ -162,13 +164,13 @@ asmlinkage unsigned long sys_enter_sandbox(unsigned long addr,
     ((unsigned long*)regs)[13] = stack + LIB_STACK_SIZE - PAGE_SIZE;
     ((unsigned long*)regs)[15] = addr + (1<<11) + 1;
 
-    printk("pid = %d, tid = %d\n", task_tgid_vnr(current), task_pid_vnr(current));
+    cond_printk("pid = %d, tid = %d\n", task_tgid_vnr(current), task_pid_vnr(current));
 
     /* Read from DACR */
     __asm__ __volatile__(
             "mrc p15, 0, %[result], c3, c0, 0\n"
             : [result] "=r" (dacr) : );
-    printk("[0x%lx] dacr=0x%lx\n", addr, dacr);
+    cond_printk("[0x%lx] dacr=0x%lx\n", addr, dacr);
 
     /* Write to DACR */
     // set_domain_client(DOMAIN_UNTRUSTED, DOMAIN_CLIENT);
@@ -178,7 +180,7 @@ asmlinkage unsigned long sys_enter_sandbox(unsigned long addr,
     __asm__ __volatile__(
             "mrc p15, 0, %[result], c3, c0, 0\n"
             : [result] "=r" (dacr) : );
-    printk("[0x%lx] dacr=0x%lx\n", addr, dacr);
+    cond_printk("[0x%lx] dacr=0x%lx\n", addr, dacr);
 
     return addr;
 }
@@ -194,7 +196,7 @@ asmlinkage void sys_exit_sandbox(struct pt_regs *regs)
     mutex_lock(&reg_lock);
     rnode = rb_search_reg_node(tid);
     if (rnode == NULL) {
-        printk("[sandbox] tid=%d does not exist in reg_tree %d\n", tid, __LINE__);
+        cond_printk("[sandbox] tid=%d does not exist in reg_tree %d\n", tid, __LINE__);
         mutex_unlock(&reg_lock);
         return;
     } else {
@@ -204,7 +206,7 @@ asmlinkage void sys_exit_sandbox(struct pt_regs *regs)
     }
     mutex_unlock(&reg_lock);
 
-    printk("pid = %d, tid = %d\n", task_tgid_vnr(current), task_pid_vnr(current));
+    cond_printk("pid = %d, tid = %d\n", task_tgid_vnr(current), task_pid_vnr(current));
 
     /* Write to DACR */
     set_domain_client(DOMAIN_USER, DOMAIN_CLIENT);
@@ -214,14 +216,14 @@ asmlinkage void sys_exit_sandbox(struct pt_regs *regs)
     __asm__ __volatile__(
             "mrc p15, 0, %[result], c3, c0, 0\n"
             : [result] "=r" (dacr) : );
-    printk("dacr=0x%lx\n", dacr);
+    cond_printk("dacr=0x%lx\n", dacr);
 
     for (i = 0; i < 16; i++) {
-        printk("%08lx ", ((unsigned long*)regs)[i]);
+        cond_printk("%08lx ", ((unsigned long*)regs)[i]);
         if (i == 7)
-            printk("\n");
+            cond_printk("\n");
     }
-    printk("\n");
+    cond_printk("\n");
 }
 
 asmlinkage void sys_mark_sandbox(unsigned long addr, unsigned long sects)
@@ -236,9 +238,9 @@ asmlinkage void sys_mark_sandbox(unsigned long addr, unsigned long sects)
     __asm__ __volatile__(
             "mrc p15, 0, %[result], c3, c0, 0\n"
             : [result] "=r" (dacr) : );
-    printk("dacr=0x%lx\n", dacr);
+    cond_printk("dacr=0x%lx\n", dacr);
 
-    printk("[sys_mark_sandbox] addr=0x%lx\n", addr);
+    cond_printk("[sys_mark_sandbox] addr=0x%lx\n", addr);
     spin_lock(&mm->page_table_lock);
     pgd = pgd_offset(mm, addr);
     pud = pud_offset(pgd, addr);
@@ -252,5 +254,5 @@ asmlinkage void sys_mark_sandbox(unsigned long addr, unsigned long sects)
         pmd++;
     }
     spin_unlock(&mm->page_table_lock);
-    printk("[sys_mark_sandbox] addr=0x%lx\n", addr);
+    cond_printk("[sys_mark_sandbox] addr=0x%lx\n", addr);
 }
