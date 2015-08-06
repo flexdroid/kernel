@@ -101,6 +101,27 @@ static void set_asid(unsigned int asid)
 }
 #endif
 
+#include <asm/domain.h>
+#include <asm/page.h>
+#include <asm/pgtable.h>
+#include <asm/bug.h>
+#include <asm/tlbflush.h>
+static void set_domain_client(unsigned int domain, unsigned int type)
+{
+    do {
+        struct thread_info *thread = current_thread_info();
+        unsigned int dom_ = thread->cpu_domain;
+        dom_ &= ~domain_val(domain, DOMAIN_MANAGER);
+        thread->cpu_domain = dom_ | domain_val(domain, type);
+        do {
+            __asm__ __volatile__(
+                    "mcr	p15, 0, %0, c3, c0	@ set domain"
+                    : : "r" (thread->cpu_domain));
+            isb();
+        } while (0);
+    } while (0);
+}
+
 /*
  * We fork()ed a process, and we need a new context for the child
  * to run in.  We reserve version 0 for initial tasks so we will
@@ -111,6 +132,7 @@ void __init_new_context(struct task_struct *tsk, struct mm_struct *mm)
 {
 	mm->context.id = 0;
 	raw_spin_lock_init(&mm->context.id_lock);
+    set_domain_client(DOMAIN_USER, DOMAIN_CLIENT);
 }
 
 static void flush_context(void)

@@ -15,7 +15,7 @@
 
 #include <linux/slab.h>
 
-#define cond_printk(...) ;
+#define cond_printk(...) printk(__VA_ARGS__)
 
 /*
  * RBTree for managing registers of each thread
@@ -93,7 +93,7 @@ out:
 #define DOM_MAX 16
 #define ENTRY_EXIT_GAP 20
 #define UNTRUSTED_SECTIONS 127
-#define LIB_STACK_SIZE (1<<22)
+#define LIB_STACK_SIZE (1<<20)
 
 static void set_domain_client(unsigned int domain, unsigned int type)
 {
@@ -233,14 +233,7 @@ asmlinkage void sys_mark_sandbox(unsigned long addr, unsigned long sects)
     pud_t *pud;
     pmd_t *pmd;
     unsigned int i;
-    unsigned long dacr = 0;
-    /* Read from DACR */
-    __asm__ __volatile__(
-            "mrc p15, 0, %[result], c3, c0, 0\n"
-            : [result] "=r" (dacr) : );
-    cond_printk("dacr=0x%lx\n", dacr);
 
-    cond_printk("[sys_mark_sandbox] addr=0x%lx\n", addr);
     spin_lock(&mm->page_table_lock);
     pgd = pgd_offset(mm, addr);
     pud = pud_offset(pgd, addr);
@@ -254,5 +247,5 @@ asmlinkage void sys_mark_sandbox(unsigned long addr, unsigned long sects)
         pmd++;
     }
     spin_unlock(&mm->page_table_lock);
-    cond_printk("[sys_mark_sandbox] addr=0x%lx\n", addr);
+    cond_printk("[sys_mark_sandbox] addr=0x%lx, sects=%ld\n", addr, sects);
 }
