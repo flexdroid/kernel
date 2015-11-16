@@ -23,6 +23,7 @@ static DEFINE_MUTEX(reg_lock);
 static struct rb_root reg_tree = RB_ROOT;
 struct reg_node {
     pid_t tid;                  /* key */
+    //unsigned long pc;
     struct pt_regs regs;
     struct rb_node elem;
 };
@@ -178,7 +179,7 @@ static void set_domain_client(unsigned int domain, unsigned int type)
     } while (0);
 }
 
-asmlinkage void sys_set_jnicaller(unsigned long addr)
+asmlinkage void sys_set_javaapicaller(unsigned long addr)
 {
     struct jni_caller_node* node = NULL;
     pid_t pid = task_tgid_vnr(current);
@@ -193,6 +194,7 @@ asmlinkage void sys_set_jnicaller(unsigned long addr)
         }
         node->pid = pid;
         node->jni_caller = addr;
+        printk("[sandbox_jnienv] jni_caller = %lx (%d)\n", addr, pid);
         rb_insert_jni_caller_node(pid, &(node->elem));
     } else {
         printk("[sandbox_jnienv] pid=%d already exists in jni_caller_tree %d\n", pid, __LINE__);
@@ -214,6 +216,16 @@ asmlinkage void sys_jnienv_enter(struct pt_regs *regs)
     pid_t tid = task_pid_vnr(current);
     pid_t pid = task_tgid_vnr(current);
 
+    printk("[sandbox_jnienv] ----> sys_jnienv_enter\n");
+    mutex_lock(&jni_caller_lock);
+    node = rb_search_jni_caller_node(pid);
+    if (node == NULL) {
+        printk("[sandbox_jnienv] no jni caller at %d\n", __LINE__);
+        mutex_unlock(&jni_caller_lock);
+        return;
+    }
+    mutex_unlock(&jni_caller_lock);
+
     /* backup thread's state */
     mutex_lock(&reg_lock);
     rnode = rb_search_reg_node(tid);
@@ -225,6 +237,7 @@ asmlinkage void sys_jnienv_enter(struct pt_regs *regs)
             return;
         }
         rnode->tid = tid;
+        //rnode->pc = ((unsigned long*)regs)[15];
         memcpy(&rnode->regs, regs, sizeof(struct pt_regs));
         rb_insert_reg_node(tid, &(rnode->elem));
     } else {
@@ -238,32 +251,21 @@ asmlinkage void sys_jnienv_enter(struct pt_regs *regs)
      * Find jump address i.e. jni caller.
      * And set PC as jump addr.
      */
-    mutex_lock(&jni_caller_lock);
-    node = rb_search_jni_caller_node(pid);
-    if (node == NULL) {
-        printk("[sandbox_jnienv] no jni caller at %d\n", __LINE__);
-    } else {
-        ((unsigned long*)regs)[15] = node->jni_caller;
-    }
-    mutex_unlock(&jni_caller_lock);
-
-    /*
-     * R6 has num.
-     * Pass it.
-     */
-    ((unsigned long*)regs)[0] = ((unsigned long*)regs)[6];
+    printk("[sandbox_jnienv] jni_caller = %lx (%d/%d)\n", node->jni_caller, tid, pid);
+    ((unsigned long*)regs)[15] = node->jni_caller;
 
     /* set domain permission */
     set_domain_client(DOMAIN_USER, DOMAIN_CLIENT);
+    printk("[sandbox_jnienv] ----< sys_jnienv_enter\n");
 }
 
-asmlinkage void sys_jnienv_exit(unsigned long r0,
-        unsigned long r1,
-        struct pt_regs *regs)
+asmlinkage void sys_jnienv_exit(struct pt_regs *regs)
 {
+    unsigned long ret;
     struct reg_node* rnode = NULL;
     pid_t tid = task_pid_vnr(current);
 
+    printk("[sandbox_jnienv] ----> sys_jnienv_exit\n");
     /* restore thread's state */
     mutex_lock(&reg_lock);
     rnode = rb_search_reg_node(tid);
@@ -272,16 +274,17 @@ asmlinkage void sys_jnienv_exit(unsigned long r0,
         mutex_unlock(&reg_lock);
         return;
     } else {
+        printk("[sandbox_jnienv] pc = %lx (%d)\n", ((unsigned long*)&rnode->regs)[15], tid);
+        ret = ((unsigned long*)regs)[0];
         memcpy(regs, &rnode->regs, sizeof(struct pt_regs));
+        ((unsigned long*)regs)[0] = ret;
+        //((unsigned long*)regs)[15] = rnode->pc;
         rb_erase(&(rnode->elem), &reg_tree);
         kfree(rnode);
     }
     mutex_unlock(&reg_lock);
 
-    /* save return value to IP, R6 */
-    ((unsigned long*)regs)[12] = r0;
-    ((unsigned long*)regs)[6] = r1;
-
     /* set domain permission */
     set_domain_client(DOMAIN_USER, DOMAIN_NOACCESS);
+    printk("[sandbox_jnienv] ----< sys_jnienv_exit\n");
 }

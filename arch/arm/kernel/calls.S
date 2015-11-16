@@ -387,10 +387,6 @@
 /* 375 */	CALL(sys_setns)
 		CALL(sys_process_vm_readv)
 		CALL(sys_process_vm_writev)
-        /*
-		CALL(sys_enter_JNI)
-		CALL(sys_exit_JNI)
-        */
 		CALL(sys_enter_sandbox_wrapper)
 		CALL(sys_exit_sandbox_wrapper)
 /* 380 */	CALL(sys_jump_in_wrapper)
@@ -398,7 +394,7 @@
         CALL(sys_mark_sandbox)
         CALL(sys_jnienv_enter_wrapper)
         CALL(sys_jnienv_exit_wrapper)
-        CALL(sys_set_jnicaller)
+        CALL(sys_set_javaapicaller)
 #ifndef syscalls_counted
 .equ syscalls_padding, ((NR_syscalls + 3) & ~3) - NR_syscalls
 #define syscalls_counted

@@ -567,7 +567,7 @@ sys_jnienv_enter_wrapper:
 ENDPROC(sys_jnienv_enter_wrapper)
 
 sys_jnienv_exit_wrapper:
-        add	r1, sp, #S_OFF
+        add	r0, sp, #S_OFF
 		b	sys_jnienv_exit
 ENDPROC(sys_jnienv_exit_wrapper)
 
