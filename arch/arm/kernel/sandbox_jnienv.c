@@ -259,9 +259,9 @@ asmlinkage void sys_jnienv_enter(struct pt_regs *regs)
     printk("[sandbox_jnienv] ----< sys_jnienv_enter\n");
 }
 
-asmlinkage void sys_jnienv_exit(struct pt_regs *regs)
+asmlinkage unsigned long sys_jnienv_exit(struct pt_regs *regs)
 {
-    unsigned long ret;
+    unsigned long ret = 0;
     struct reg_node* rnode = NULL;
     pid_t tid = task_pid_vnr(current);
 
@@ -272,10 +272,11 @@ asmlinkage void sys_jnienv_exit(struct pt_regs *regs)
     if (rnode == NULL) {
         printk("[sandbox_jnienv] tid=%d does not exist in reg_tree %d\n", tid, __LINE__);
         mutex_unlock(&reg_lock);
-        return;
+        return ret;
     } else {
         printk("[sandbox_jnienv] pc = %lx (%d)\n", ((unsigned long*)&rnode->regs)[15], tid);
         ret = ((unsigned long*)regs)[0];
+        printk("[sandbox_jnienv] ret = %lx (%d)\n", ret, tid);
         memcpy(regs, &rnode->regs, sizeof(struct pt_regs));
         ((unsigned long*)regs)[0] = ret;
         //((unsigned long*)regs)[15] = rnode->pc;
@@ -287,4 +288,6 @@ asmlinkage void sys_jnienv_exit(struct pt_regs *regs)
     /* set domain permission */
     set_domain_client(DOMAIN_USER, DOMAIN_NOACCESS);
     printk("[sandbox_jnienv] ----< sys_jnienv_exit\n");
+
+    return ret;
 }
