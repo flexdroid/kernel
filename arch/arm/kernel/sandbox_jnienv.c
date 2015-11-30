@@ -215,6 +215,7 @@ asmlinkage void sys_jnienv_enter(struct pt_regs *regs)
     struct jni_caller_node* node = NULL;
     pid_t tid = task_pid_vnr(current);
     pid_t pid = task_tgid_vnr(current);
+    unsigned long apinum = ((unsigned long*)regs)[8];
 
     printk("[sandbox_jnienv] ----> sys_jnienv_enter\n");
     mutex_lock(&jni_caller_lock);
@@ -251,11 +252,20 @@ asmlinkage void sys_jnienv_enter(struct pt_regs *regs)
      * Find jump address i.e. jni caller.
      * And set PC as jump addr.
      */
-    printk("[sandbox_jnienv] jni_caller = %lx (%d/%d)\n", node->jni_caller, tid, pid);
-    ((unsigned long*)regs)[15] = node->jni_caller;
+    printk("[sandbox_jnienv] jni_caller = %lx, %ld (%d/%d)\n",
+            node->jni_caller, apinum, tid, pid);
+    if (apinum > 228) {
+        printk("[sandbox_jnienv] apinum (%ld) > 228\n", apinum);
+        return;
+    }
 
     /* set domain permission */
     set_domain_client(DOMAIN_USER, DOMAIN_CLIENT);
+
+    ((unsigned long*)regs)[15] =
+        ((unsigned long *)node->jni_caller)[apinum+4];
+    printk("[sandbox_jnienv] pc = %lx, sp = %lx\n",
+            ((unsigned long*)regs)[15], ((unsigned long*)regs)[13]);
     printk("[sandbox_jnienv] ----< sys_jnienv_enter\n");
 }
 
