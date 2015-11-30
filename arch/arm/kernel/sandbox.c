@@ -131,6 +131,7 @@ asmlinkage unsigned long sys_enter_sandbox(unsigned long addr,
     pid_t tid = task_pid_vnr(current);
     unsigned int i;
 
+    cond_printk("----> sys_enter_sandbox\n");
     for (i = 0; i < 16; i++) {
         cond_printk("%08lx ", ((unsigned long*)regs)[i]);
         if (i == 7)
@@ -181,6 +182,7 @@ asmlinkage unsigned long sys_enter_sandbox(unsigned long addr,
             "mrc p15, 0, %[result], c3, c0, 0\n"
             : [result] "=r" (dacr) : );
     cond_printk("[0x%lx] dacr=0x%lx\n", addr, dacr);
+    cond_printk("----< sys_enter_sandbox\n");
 
     return addr;
 }
@@ -192,6 +194,7 @@ asmlinkage void sys_exit_sandbox(struct pt_regs *regs)
     pid_t tid = task_pid_vnr(current);
     unsigned int i;
 
+    cond_printk("----> sys_exit_sandbox\n");
     /* restore thread's state */
     mutex_lock(&reg_lock);
     rnode = rb_search_reg_node(tid);
@@ -224,6 +227,7 @@ asmlinkage void sys_exit_sandbox(struct pt_regs *regs)
             cond_printk("\n");
     }
     cond_printk("\n");
+    cond_printk("----< sys_exit_sandbox\n");
 }
 
 asmlinkage void sys_mark_sandbox(unsigned long addr, unsigned long sects)

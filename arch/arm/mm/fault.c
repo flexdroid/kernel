@@ -533,11 +533,6 @@ do_domain_fault(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
     pud_t *pud;
     pmd_t *pmd;
 
-#ifdef CONFIG_STACKTRACE
-    struct stack_trace trace;
-    unsigned long entries[8];
-#endif
-
     printk("pid = %d, tid = %d\n", task_tgid_vnr(current), task_pid_vnr(current));
     printk("domain fault at 0x%08lx, fsr=0x%08x\n", addr, fsr);
     printk("domain fault pc=0x%08lx, sp=0x%08lx\n", regs->uregs[15], regs->uregs[13]);
@@ -560,18 +555,6 @@ do_domain_fault(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
             "mrc p15, 0, %[result], c3, c0, 0\n"
             : [result] "=r" (dacr) : );
     printk("dacr=0x%lx\n", dacr);
-
-#ifdef CONFIG_STACKTRACE
-    trace.nr_entries = 0;
-    trace.max_entries = ARRAY_SIZE(entries);
-    trace.entries = entries;
-    trace.skip = 0;
-
-    save_stack_trace(&trace);
-    print_stack_trace(&trace, 0);
-#else
-    printk("Saved backtrace test skipped.\n");
-#endif
 
     return 0;
 }
